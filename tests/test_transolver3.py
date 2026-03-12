@@ -22,7 +22,7 @@ import torch.nn as nn
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from transolver3.physics_attention_v3 import PhysicsAttentionV3, _slice_aggregate, _deslice
+from transolver3.physics_attention_v3 import PhysicsAttentionV3, _slice_aggregate, _deslice, _resolve_num_tiles
 from transolver3.transolver3_block import Transolver3Block, _pointwise_chunked
 from transolver3.model import Transolver3
 from transolver3.inference import CachedInference
@@ -605,6 +605,76 @@ def test_inner_dim_assertion():
         print(f"PASS: inner_dim != dim correctly raises AssertionError")
 
 
+def test_resolve_num_tiles():
+    """Test _resolve_num_tiles auto-computes tile count from tile_size."""
+    # tile_size=0 → passthrough num_tiles
+    assert _resolve_num_tiles(1000, num_tiles=0) == 0
+    assert _resolve_num_tiles(1000, num_tiles=5) == 5
+
+    # tile_size > 0 → auto-compute, overrides num_tiles
+    assert _resolve_num_tiles(1000, num_tiles=0, tile_size=100) == 10
+    assert _resolve_num_tiles(1000, num_tiles=99, tile_size=100) == 10  # overrides
+    assert _resolve_num_tiles(1050, num_tiles=0, tile_size=100) == 11  # ceil
+    assert _resolve_num_tiles(100, num_tiles=0, tile_size=100) == 1  # exactly 1 tile
+    assert _resolve_num_tiles(50, num_tiles=0, tile_size=100) == 1  # N < tile_size
+
+    # Paper-recommended 100K
+    assert _resolve_num_tiles(2_900_000, tile_size=100_000) == 29
+    assert _resolve_num_tiles(160_000_000, tile_size=100_000) == 1600
+
+    print("PASS: _resolve_num_tiles auto-computes correctly")
+
+
+def test_tile_size_attention():
+    """Test PhysicsAttentionV3 with tile_size produces same results as num_tiles."""
+    B, N, C = 1, 200, 64
+    heads = 4
+    attn = PhysicsAttentionV3(C, heads=heads, dim_head=C // heads, slice_num=16)
+    attn.eval()
+
+    x = torch.randn(B, N, C)
+    with torch.no_grad():
+        # tile_size=50 with N=200 → num_tiles=4
+        out_tile_size = attn(x, tile_size=50)
+        out_num_tiles = attn(x, num_tiles=4)
+
+    diff = (out_tile_size - out_num_tiles).abs().max().item()
+    assert diff < 1e-6, f"tile_size vs num_tiles max diff: {diff}"
+    print(f"PASS: tile_size=50 matches num_tiles=4 (diff: {diff:.2e})")
+
+
+def test_tile_size_model():
+    """Test Transolver3 with tile_size at constructor and forward levels."""
+    B, N = 1, 200
+    space_dim = 3
+    out_dim = 2
+
+    # Constructor-level tile_size
+    model = Transolver3(
+        space_dim=space_dim, n_layers=2, n_hidden=64, n_head=4,
+        fun_dim=0, out_dim=out_dim, slice_num=16, mlp_ratio=1,
+        tile_size=50,
+    )
+    model.eval()
+
+    x = torch.randn(B, N, space_dim)
+    with torch.no_grad():
+        out_ctor = model(x)
+        # Forward-level tile_size overrides
+        out_fwd = model(x, tile_size=100)
+        # Equivalent num_tiles
+        out_ref = model(x, num_tiles=4, tile_size=0)  # tile_size=0 disables
+
+    assert out_ctor.shape == (B, N, out_dim)
+    assert out_fwd.shape == (B, N, out_dim)
+
+    # ctor tile_size=50 → 4 tiles, should match num_tiles=4
+    diff = (out_ctor - out_ref).abs().max().item()
+    assert diff < 1e-5, f"Constructor tile_size vs num_tiles diff: {diff}"
+
+    print(f"PASS: model tile_size works at constructor and forward levels")
+
+
 if __name__ == '__main__':
     print("=" * 60)
     print("Transolver-3 Tests")
@@ -636,6 +706,15 @@ if __name__ == '__main__':
     test_fix6_autocast_numerics()
     test_model_with_mlp_chunking()
     test_inner_dim_assertion()
+
+    # Tile size auto-computation tests
+    print("\n" + "=" * 60)
+    print("Tile Size Auto-Computation Tests")
+    print("=" * 60)
+
+    test_resolve_num_tiles()
+    test_tile_size_attention()
+    test_tile_size_model()
 
     print("\n" + "=" * 60)
     print("ALL TESTS PASSED")

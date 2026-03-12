@@ -83,8 +83,8 @@ class Transolver3Block(nn.Module):
         fn = lambda x: self.mlp2(self.ln_3(x))
         return _pointwise_chunked(fn, fx, self.mlp_chunk_size)
 
-    def forward(self, fx, num_tiles=0):
-        fx = self.Attn(self.ln_1(fx), num_tiles=num_tiles) + fx
+    def forward(self, fx, num_tiles=0, tile_size=0):
+        fx = self.Attn(self.ln_1(fx), num_tiles=num_tiles, tile_size=tile_size) + fx
         fx = self._mlp_residual(fx)
         if self.last_layer:
             return self._last_layer_head(fx)

@@ -25,6 +25,25 @@ from torch.utils.checkpoint import checkpoint
 from einops import rearrange
 
 
+def _resolve_num_tiles(N, num_tiles=0, tile_size=0):
+    """Compute num_tiles from either num_tiles or tile_size.
+
+    Paper Table 5: "A tile size of 100k serves as an ideal choice."
+
+    Args:
+        N: number of mesh points
+        num_tiles: explicit tile count (0 or 1 = no tiling)
+        tile_size: target points per tile (0 = disabled). If >0,
+                   overrides num_tiles: num_tiles = ceil(N / tile_size).
+
+    Returns:
+        int: resolved num_tiles (0 means no tiling)
+    """
+    if tile_size > 0:
+        return math.ceil(N / tile_size)
+    return num_tiles
+
+
 def _slice_aggregate(w, x, heads):
     """Memory-efficient w^T @ x without materializing (B,H,N,C).
 
@@ -136,7 +155,7 @@ class PhysicsAttentionV3(nn.Module):
         w = self.softmax(logits / temperature)  # B, H, N, M
         return w
 
-    def forward(self, x, num_tiles=0):
+    def forward(self, x, num_tiles=0, tile_size=0):
         """Forward pass with optional geometry slice tiling.
 
         Args:
@@ -144,12 +163,16 @@ class PhysicsAttentionV3(nn.Module):
             num_tiles: number of tiles for memory-efficient processing.
                        0 or 1 = no tiling (standard path).
                        >1 = tiled processing with gradient checkpointing.
+            tile_size: target points per tile. If >0, overrides num_tiles.
+                       Paper recommends 100_000 (Table 5).
 
         Returns:
             x_out: (B, N, C) output features
         """
-        if num_tiles > 1:
-            return self._forward_tiled(x, num_tiles)
+        N = x.shape[1]
+        tiles = _resolve_num_tiles(N, num_tiles, tile_size)
+        if tiles > 1:
+            return self._forward_tiled(x, tiles)
         return self._forward_standard(x)
 
     def _forward_standard(self, x):
@@ -246,18 +269,20 @@ class PhysicsAttentionV3(nn.Module):
     # --- Physical State Caching (Inference) ---
 
     @torch.no_grad()
-    def compute_physical_state(self, x, num_tiles=0):
+    def compute_physical_state(self, x, num_tiles=0, tile_size=0):
         """Compute raw physical state accumulators from input features.
 
         Args:
             x: (B, N, C) input features (possibly a chunk of the full mesh)
             num_tiles: tiling for memory efficiency within this chunk
+            tile_size: target points per tile (overrides num_tiles if >0)
 
         Returns:
             s_raw: (B, H, M, C) raw aggregated features (for accumulation)
             d: (B, H, M) normalization diagonal (for accumulation)
         """
         B, N, C = x.shape
+        num_tiles = _resolve_num_tiles(N, num_tiles, tile_size)
 
         if num_tiles > 1:
             tile_size = math.ceil(N / num_tiles)

@@ -40,6 +40,7 @@ class Transolver3(nn.Module):
                  ref=8,
                  unified_pos=False,
                  num_tiles=0,
+                 tile_size=0,
                  mlp_chunk_size=0,
                  ):
         super(Transolver3, self).__init__()
@@ -50,6 +51,7 @@ class Transolver3(nn.Module):
         self.n_hidden = n_hidden
         self.space_dim = space_dim
         self.num_tiles = num_tiles
+        self.tile_size = tile_size
 
         if self.unified_pos:
             self.preprocess = MLP(fun_dim + self.ref * self.ref, n_hidden * 2,
@@ -134,7 +136,8 @@ class Transolver3(nn.Module):
 
         return fx
 
-    def forward(self, x, fx=None, T=None, num_tiles=None, subset_indices=None):
+    def forward(self, x, fx=None, T=None, num_tiles=None, tile_size=None,
+                subset_indices=None):
         """Forward pass.
 
         Args:
@@ -142,6 +145,8 @@ class Transolver3(nn.Module):
             fx: (B, N, fun_dim) optional function values at mesh points
             T: optional timestep for time-dependent problems
             num_tiles: override per-call tiling (0=no tiling, >1=tiled)
+            tile_size: target points per tile. If >0, overrides num_tiles.
+                       Paper recommends 100_000 (Table 5).
             subset_indices: (n,) indices for geometry amortized training.
                            If provided, only these mesh points are used.
 
@@ -149,6 +154,7 @@ class Transolver3(nn.Module):
             output: (B, N', out_dim) predictions at mesh points
         """
         tiles = num_tiles if num_tiles is not None else self.num_tiles
+        ts = tile_size if tile_size is not None else self.tile_size
 
         # Geometry amortized training: subsample mesh
         if subset_indices is not None:
@@ -159,7 +165,7 @@ class Transolver3(nn.Module):
         fx = self._preprocess(x, fx, T)
 
         for block in self.blocks:
-            fx = block(fx, num_tiles=tiles)
+            fx = block(fx, num_tiles=tiles, tile_size=ts)
 
         return fx
 
