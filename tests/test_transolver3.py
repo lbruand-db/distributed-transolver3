@@ -831,6 +831,44 @@ def test_train_step_with_normalizer():
     print(f"PASS: train_step with normalizer (loss_with={loss_with:.4f}, loss_without={loss_without:.4f})")
 
 
+def test_train_step_mixed_precision():
+    """Test train_step with GradScaler for mixed precision training."""
+    B, N = 1, 100
+    space_dim = 3
+    out_dim = 2
+
+    model = Transolver3(
+        space_dim=space_dim, n_layers=2, n_hidden=32, n_head=4,
+        fun_dim=0, out_dim=out_dim, slice_num=8, mlp_ratio=1,
+    )
+
+    x = torch.randn(B, N, space_dim)
+    target = torch.randn(B, N, out_dim)
+
+    optimizer = create_optimizer(model)
+    scheduler = create_scheduler(optimizer, total_steps=10)
+
+    device_type = next(model.parameters()).device.type
+
+    # GradScaler: on CPU it's essentially a no-op but tests the code path
+    scaler = torch.amp.GradScaler(device=device_type, enabled=(device_type == 'cuda'))
+
+    # Multiple steps to verify gradients flow correctly
+    losses = []
+    for _ in range(3):
+        loss = train_step(model, x, None, target, optimizer, scheduler,
+                          scaler=scaler)
+        losses.append(loss)
+
+    assert all(isinstance(l, float) and l > 0 for l in losses)
+
+    # Without scaler should also still work
+    loss_no_scaler = train_step(model, x, None, target, optimizer, scheduler)
+    assert isinstance(loss_no_scaler, float) and loss_no_scaler > 0
+
+    print(f"PASS: train_step mixed precision (losses: {[f'{l:.4f}' for l in losses]})")
+
+
 def test_input_normalizer_per_sample():
     """Test InputNormalizer per-sample mode (default)."""
     B, N, D = 2, 50, 3
@@ -1167,6 +1205,7 @@ if __name__ == '__main__':
     test_target_normalizer_state_dict()
     test_target_normalizer_device()
     test_train_step_with_normalizer()
+    test_train_step_mixed_precision()
 
     # Input normalization tests
     print("\n" + "=" * 60)

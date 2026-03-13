@@ -107,8 +107,13 @@ def create_scheduler(optimizer, total_steps, warmup_fraction=0.05, min_lr=1e-6):
 
 
 def train_step(model, x, fx, target, optimizer, scheduler, sampler=None,
-               num_tiles=0, tile_size=0, grad_clip=1.0, normalizer=None):
+               num_tiles=0, tile_size=0, grad_clip=1.0, normalizer=None,
+               scaler=None):
     """Single training step with optional geometry amortized training.
+
+    Paper (Appendix A.4): "Training was conducted in either float16 or
+    bfloat16 precision." Pass a torch.amp.GradScaler to enable mixed
+    precision training automatically.
 
     Args:
         model: Transolver3 model
@@ -125,6 +130,9 @@ def train_step(model, x, fx, target, optimizer, scheduler, sampler=None,
         normalizer: TargetNormalizer or None. If provided, targets are
                     encoded before loss computation so the model learns
                     in normalized space (paper Appendix A.3).
+        scaler: torch.amp.GradScaler or None. If provided, enables
+                mixed precision training (paper Appendix A.4).
+                Use with model wrapped in torch.autocast.
 
     Returns:
         loss_value: scalar loss
@@ -132,24 +140,38 @@ def train_step(model, x, fx, target, optimizer, scheduler, sampler=None,
     model.train()
     optimizer.zero_grad()
 
-    if sampler is not None:
-        N = x.shape[1]
-        indices = sampler.sample(N).to(x.device)
-        pred = model(x, fx=fx, num_tiles=num_tiles, tile_size=tile_size,
-                     subset_indices=indices)
-        t = target[:, indices]
+    device_type = next(model.parameters()).device.type
+    # Use autocast when a scaler is provided
+    use_amp = scaler is not None
+    amp_dtype = torch.bfloat16 if device_type == 'cpu' else torch.float16
+
+    with torch.autocast(device_type=device_type, dtype=amp_dtype, enabled=use_amp):
+        if sampler is not None:
+            N = x.shape[1]
+            indices = sampler.sample(N).to(x.device)
+            pred = model(x, fx=fx, num_tiles=num_tiles, tile_size=tile_size,
+                         subset_indices=indices)
+            t = target[:, indices]
+        else:
+            pred = model(x, fx=fx, num_tiles=num_tiles, tile_size=tile_size)
+            t = target
+
+        if normalizer is not None:
+            t = normalizer.encode(t)
+
+        loss = relative_l2_loss(pred.float(), t.float())
+
+    if scaler is not None:
+        scaler.scale(loss).backward()
+        scaler.unscale_(optimizer)
+        nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+        scaler.step(optimizer)
+        scaler.update()
     else:
-        pred = model(x, fx=fx, num_tiles=num_tiles, tile_size=tile_size)
-        t = target
+        loss.backward()
+        nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+        optimizer.step()
 
-    if normalizer is not None:
-        t = normalizer.encode(t)
-
-    loss = relative_l2_loss(pred, t)
-
-    loss.backward()
-    nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
-    optimizer.step()
     scheduler.step()
 
     return loss.item()
