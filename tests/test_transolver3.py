@@ -27,8 +27,10 @@ from transolver3.transolver3_block import Transolver3Block, _pointwise_chunked
 from transolver3.model import Transolver3
 from transolver3.inference import CachedInference
 from transolver3.amortized_training import (
-    AmortizedMeshSampler, relative_l2_loss, create_optimizer, create_scheduler
+    AmortizedMeshSampler, relative_l2_loss, create_optimizer, create_scheduler,
+    train_step,
 )
+from transolver3.normalizer import TargetNormalizer
 
 
 def test_attention_shapes():
@@ -675,6 +677,156 @@ def test_tile_size_model():
     print(f"PASS: model tile_size works at constructor and forward levels")
 
 
+def test_target_normalizer_fit():
+    """Test TargetNormalizer fit computes correct mean/std and encode/decode are inverse."""
+    # Create targets with known distribution: mean=10, std=3 per channel
+    torch.manual_seed(42)
+    num_samples, N, out_dim = 100, 50, 3
+    targets = torch.randn(num_samples, N, out_dim) * 3.0 + 10.0
+
+    normalizer = TargetNormalizer()
+    normalizer.fit(targets)
+
+    # Check mean is close to 10, std close to 3
+    assert (normalizer.mean - 10.0).abs().max().item() < 0.5, \
+        f"Mean should be ~10, got {normalizer.mean.squeeze().tolist()}"
+    assert (normalizer.std - 3.0).abs().max().item() < 0.5, \
+        f"Std should be ~3, got {normalizer.std.squeeze().tolist()}"
+
+    # Encoded data should have ~zero mean, ~unit variance
+    encoded = normalizer.encode(targets)
+    enc_mean = encoded.mean(dim=(0, 1))
+    enc_std = encoded.std(dim=(0, 1))
+    assert enc_mean.abs().max().item() < 0.1, \
+        f"Encoded mean should be ~0, got {enc_mean.tolist()}"
+    assert (enc_std - 1.0).abs().max().item() < 0.1, \
+        f"Encoded std should be ~1, got {enc_std.tolist()}"
+
+    # Decode(encode(x)) == x
+    decoded = normalizer.decode(encoded)
+    diff = (decoded - targets).abs().max().item()
+    assert diff < 1e-5, f"decode(encode(x)) != x, max diff: {diff}"
+
+    print(f"PASS: TargetNormalizer fit/encode/decode (roundtrip diff: {diff:.2e})")
+
+
+def test_target_normalizer_incremental():
+    """Test incremental fitting matches full fit."""
+    torch.manual_seed(42)
+    num_samples, N, out_dim = 200, 50, 3
+    targets = torch.randn(num_samples, N, out_dim) * 5.0 - 2.0
+
+    # Full fit
+    norm_full = TargetNormalizer()
+    norm_full.fit(targets)
+
+    # Incremental fit (simulate batches of 20)
+    norm_inc = TargetNormalizer()
+    batches = [targets[i:i+20] for i in range(0, num_samples, 20)]
+    norm_inc.fit_incremental(iter(batches))
+
+    mean_diff = (norm_full.mean - norm_inc.mean).abs().max().item()
+    std_diff = (norm_full.std - norm_inc.std).abs().max().item()
+
+    # Tolerance accounts for Bessel's correction difference (std uses N-1,
+    # streaming uses N) and float32 vs float64 accumulation
+    assert mean_diff < 1e-3, f"Incremental mean diff: {mean_diff}"
+    assert std_diff < 1e-3, f"Incremental std diff: {std_diff}"
+
+    print(f"PASS: TargetNormalizer incremental matches full (mean diff: {mean_diff:.2e}, std diff: {std_diff:.2e})")
+
+
+def test_target_normalizer_2d_input():
+    """Test TargetNormalizer works with 2D input (N, out_dim)."""
+    targets = torch.randn(100, 3) * 2.0 + 5.0
+    normalizer = TargetNormalizer()
+    normalizer.fit(targets)
+
+    encoded = normalizer.encode(targets)
+    decoded = normalizer.decode(encoded)
+    diff = (decoded - targets).abs().max().item()
+    assert diff < 1e-5, f"2D roundtrip diff: {diff}"
+    print(f"PASS: TargetNormalizer works with 2D input")
+
+
+def test_target_normalizer_state_dict():
+    """Test TargetNormalizer saves/loads via state_dict (nn.Module)."""
+    torch.manual_seed(42)
+    targets = torch.randn(50, 30, 2) * 4.0 + 3.0
+
+    norm1 = TargetNormalizer()
+    norm1.fit(targets)
+
+    # Save and reload
+    state = norm1.state_dict()
+    norm2 = TargetNormalizer(out_dim=2)
+    norm2.load_state_dict(state)
+
+    # Check stats match
+    assert (norm1.mean - norm2.mean).abs().max().item() < 1e-7
+    assert (norm1.std - norm2.std).abs().max().item() < 1e-7
+    assert norm2.fitted.item() is True
+
+    # Encode with both should match
+    encoded1 = norm1.encode(targets)
+    encoded2 = norm2.encode(targets)
+    assert (encoded1 - encoded2).abs().max().item() < 1e-7
+
+    print("PASS: TargetNormalizer state_dict save/load")
+
+
+def test_target_normalizer_device():
+    """Test TargetNormalizer follows model.to(device)."""
+    targets = torch.randn(20, 10, 2)
+    normalizer = TargetNormalizer()
+    normalizer.fit(targets)
+
+    # Should work on CPU
+    encoded = normalizer.encode(targets)
+    assert encoded.device.type == 'cpu'
+
+    # to() should move buffers
+    normalizer.cpu()
+    assert normalizer.mean.device.type == 'cpu'
+
+    print("PASS: TargetNormalizer device handling")
+
+
+def test_train_step_with_normalizer():
+    """Test train_step integrates with TargetNormalizer."""
+    B, N = 1, 100
+    space_dim = 3
+    out_dim = 2
+
+    model = Transolver3(
+        space_dim=space_dim, n_layers=2, n_hidden=32, n_head=4,
+        fun_dim=0, out_dim=out_dim, slice_num=8, mlp_ratio=1,
+    )
+
+    x = torch.randn(B, N, space_dim)
+    target = torch.randn(B, N, out_dim) * 5.0 + 10.0  # non-normalized
+
+    # Fit normalizer on training targets
+    normalizer = TargetNormalizer()
+    normalizer.fit(target)
+
+    optimizer = create_optimizer(model)
+    scheduler = create_scheduler(optimizer, total_steps=10)
+
+    # Train step with normalizer
+    loss_with = train_step(model, x, None, target, optimizer, scheduler,
+                           normalizer=normalizer)
+
+    # Train step without (for comparison — should also work)
+    loss_without = train_step(model, x, None, target, optimizer, scheduler,
+                              normalizer=None)
+
+    assert isinstance(loss_with, float) and loss_with > 0
+    assert isinstance(loss_without, float) and loss_without > 0
+
+    print(f"PASS: train_step with normalizer (loss_with={loss_with:.4f}, loss_without={loss_without:.4f})")
+
+
 if __name__ == '__main__':
     print("=" * 60)
     print("Transolver-3 Tests")
@@ -715,6 +867,18 @@ if __name__ == '__main__':
     test_resolve_num_tiles()
     test_tile_size_attention()
     test_tile_size_model()
+
+    # Target normalization tests
+    print("\n" + "=" * 60)
+    print("Target Normalization Tests")
+    print("=" * 60)
+
+    test_target_normalizer_fit()
+    test_target_normalizer_incremental()
+    test_target_normalizer_2d_input()
+    test_target_normalizer_state_dict()
+    test_target_normalizer_device()
+    test_train_step_with_normalizer()
 
     print("\n" + "=" * 60)
     print("ALL TESTS PASSED")

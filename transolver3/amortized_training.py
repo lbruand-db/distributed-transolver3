@@ -107,14 +107,14 @@ def create_scheduler(optimizer, total_steps, warmup_fraction=0.05, min_lr=1e-6):
 
 
 def train_step(model, x, fx, target, optimizer, scheduler, sampler=None,
-               num_tiles=0, tile_size=0, grad_clip=1.0):
+               num_tiles=0, tile_size=0, grad_clip=1.0, normalizer=None):
     """Single training step with optional geometry amortized training.
 
     Args:
         model: Transolver3 model
         x: (B, N, space_dim) mesh coordinates
         fx: (B, N, fun_dim) or None, input features
-        target: (B, N, out_dim) ground truth
+        target: (B, N, out_dim) ground truth (in original scale)
         optimizer: optimizer
         scheduler: LR scheduler
         sampler: AmortizedMeshSampler or None (None = use full mesh)
@@ -122,6 +122,9 @@ def train_step(model, x, fx, target, optimizer, scheduler, sampler=None,
         tile_size: target points per tile (overrides num_tiles if >0).
                    Paper recommends 100_000 (Table 5).
         grad_clip: gradient clipping norm
+        normalizer: TargetNormalizer or None. If provided, targets are
+                    encoded before loss computation so the model learns
+                    in normalized space (paper Appendix A.3).
 
     Returns:
         loss_value: scalar loss
@@ -134,10 +137,15 @@ def train_step(model, x, fx, target, optimizer, scheduler, sampler=None,
         indices = sampler.sample(N).to(x.device)
         pred = model(x, fx=fx, num_tiles=num_tiles, tile_size=tile_size,
                      subset_indices=indices)
-        loss = relative_l2_loss(pred, target[:, indices])
+        t = target[:, indices]
     else:
         pred = model(x, fx=fx, num_tiles=num_tiles, tile_size=tile_size)
-        loss = relative_l2_loss(pred, target)
+        t = target
+
+    if normalizer is not None:
+        t = normalizer.encode(t)
+
+    loss = relative_l2_loss(pred, t)
 
     loss.backward()
     nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
