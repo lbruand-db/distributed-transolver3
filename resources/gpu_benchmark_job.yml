@@ -11,7 +11,6 @@ resources:
               - "--gpu_type"
               - "${var.gpu_type}"
           new_cluster:
-            cluster_name: "transolver3-bench-${var.gpu_type}"
             spark_version: "15.4.x-gpu-ml-scala2.12"
             node_type_id: ${var.node_type_id}
             num_workers: 0

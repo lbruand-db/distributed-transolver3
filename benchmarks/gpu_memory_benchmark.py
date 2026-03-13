@@ -25,21 +25,34 @@ import gc
 import traceback
 
 # --- Path setup: find transolver3 package ---
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+try:
+    SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+except NameError:
+    # Databricks spark_python_task runs via exec(), __file__ is not defined.
+    # The bundle uploads files under .bundle/<name>/<target>/files/
+    SCRIPT_DIR = os.getcwd()
+    # Look for the workspace bundle path
+    for candidate in sys.argv:
+        if "files/benchmarks" in candidate:
+            SCRIPT_DIR = os.path.dirname(candidate)
+            break
+
 REPO_ROOT = os.path.dirname(SCRIPT_DIR)
 sys.path.insert(0, REPO_ROOT)
 
-# Databricks DBFS fallback
-DBFS_REPO = "/dbfs/transolver3_benchmark"
-if os.path.isdir(DBFS_REPO) and not os.path.isdir(os.path.join(REPO_ROOT, "transolver3")):
-    sys.path.insert(0, DBFS_REPO)
+# Databricks workspace bundle path fallback
+# DABs uploads to /Workspace/Users/<user>/.bundle/<name>/<target>/files/
+if not os.path.isdir(os.path.join(REPO_ROOT, "transolver3")):
+    # Try parent dirs until we find transolver3/
+    test_dir = SCRIPT_DIR
+    for _ in range(5):
+        test_dir = os.path.dirname(test_dir)
+        if os.path.isdir(os.path.join(test_dir, "transolver3")):
+            REPO_ROOT = test_dir
+            sys.path.insert(0, REPO_ROOT)
+            break
 
-# --- Install einops if missing ---
-try:
-    import einops  # noqa: F401
-except ImportError:
-    import subprocess
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "einops", "-q"])
+# einops and timm are installed via DAB job libraries or pip
 
 import torch
 import torch.nn as nn
@@ -72,8 +85,8 @@ GPU_PROFILES = {
         "decode_chunk_size": 50_000,
         "use_fp16": True,
         "mesh_sizes": [
-            1_000, 5_000, 10_000, 50_000,
-            100_000, 200_000, 500_000, 1_000_000,
+            50_000, 200_000, 500_000, 1_000_000,
+            2_000_000, 4_000_000, 6_000_000, 8_000_000,
         ],
         "train_steps": 3,
     },
@@ -152,7 +165,8 @@ def gpu_info():
     if not torch.cuda.is_available():
         return "CPU", 0
     props = torch.cuda.get_device_properties(0)
-    return props.name, props.total_mem / (1024 ** 2)
+    total = getattr(props, "total_memory", None) or getattr(props, "total_mem", 0)
+    return props.name, total / (1024 ** 2)
 
 
 def detect_gpu_type():
@@ -161,10 +175,10 @@ def detect_gpu_type():
     if "A10" in name:
         return "a10g"
     if "A100" in name:
-        total_gb = torch.cuda.get_device_properties(0).total_mem / (1024 ** 3)
+        total_gb = gpu_info()[1] * (1024 ** 2) / (1024 ** 3)
         return "a100_80" if total_gb > 50 else "a100_40"
     # Fallback: pick profile based on VRAM
-    total_gb = torch.cuda.get_device_properties(0).total_mem / (1024 ** 3)
+    total_gb = gpu_info()[1] * (1024 ** 2) / (1024 ** 3)
     if total_gb >= 60:
         return "a100_80"
     if total_gb >= 30:
@@ -457,7 +471,7 @@ def main():
     output = {
         "gpu_type": gpu_type,
         "gpu_name": torch.cuda.get_device_name(0),
-        "gpu_vram_mb": round(torch.cuda.get_device_properties(0).total_mem / (1024 ** 2), 0),
+        "gpu_vram_mb": round(gpu_info()[1] * (1024 ** 2) / (1024 ** 2), 0),
         "profile": {k: v for k, v in GPU_PROFILES[gpu_type].items() if k != "model"},
         "model_config": GPU_PROFILES[gpu_type]["model"],
         "results": results,
