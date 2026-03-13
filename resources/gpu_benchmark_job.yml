@@ -1,0 +1,27 @@
+resources:
+  jobs:
+    gpu_memory_benchmark:
+      name: "[${bundle.target}] Transolver-3 GPU Memory Benchmark"
+
+      tasks:
+        - task_key: "benchmark"
+          spark_python_task:
+            python_file: ../benchmarks/gpu_memory_benchmark.py
+            parameters:
+              - "--gpu_type"
+              - "${var.gpu_type}"
+          new_cluster:
+            cluster_name: "transolver3-bench-${var.gpu_type}"
+            spark_version: "15.4.x-gpu-ml-scala2.12"
+            node_type_id: ${var.node_type_id}
+            num_workers: 0
+            spark_conf:
+              spark.databricks.cluster.profile: "singleNode"
+              spark.master: "local[*]"
+            custom_tags:
+              ResourceClass: "SingleNode"
+          libraries:
+            - pypi:
+                package: "einops>=0.7"
+            - pypi:
+                package: "timm>=1.0"

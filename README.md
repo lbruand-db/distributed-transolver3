@@ -16,6 +16,13 @@ Based on [Transolver](https://arxiv.org/abs/2402.02366) (ICML 2024 Spotlight) an
 <img src="./pic/Transolver.png" height="250" alt="" align=center />
 </p>
 
+## Setup
+
+```bash
+uv sync              # install dependencies
+uv run pytest        # run tests (41 tests)
+```
+
 ## Get Started
 
 ```python
@@ -64,7 +71,12 @@ Industrial-Scale-Benchmarks/          # Experiments
 ├── dataset/                          # Dataset loaders
 └── utils/metrics.py                  # Evaluation metrics
 
+benchmarks/                           # GPU memory benchmarking
+└── gpu_memory_benchmark.py           # Sweep mesh sizes, measure all 3 phases
+
 tests/test_transolver3.py             # 41 tests
+databricks.yml                        # DAB bundle config
+resources/gpu_benchmark_job.yml       # Job resource definition
 ```
 
 ## Memory Scaling
@@ -87,6 +99,30 @@ results = benchmark_scaling(model, mesh_sizes=[1000, 10000, 100000],
     ])
 print(format_benchmark_table(results))
 ```
+
+## GPU Benchmark (Databricks Asset Bundle)
+
+Deploy and run the GPU memory benchmark on Databricks using DABs.
+
+Three targets map to different GPU instances:
+
+| Target | Instance | GPU | VRAM |
+|--------|----------|-----|------|
+| `a10g` (default) | `g5.xlarge` | NVIDIA A10G | 24 GB |
+| `a100_40` | `p4d.24xlarge` | NVIDIA A100 | 40 GB |
+| `a100_80` | `p4de.24xlarge` | NVIDIA A100 | 80 GB |
+
+```bash
+# Deploy and run on g5.xlarge (A10G)
+databricks bundle deploy
+databricks bundle run gpu_memory_benchmark
+
+# Deploy and run on A100
+databricks bundle deploy -t a100_40
+databricks bundle run gpu_memory_benchmark -t a100_40
+```
+
+The benchmark sweeps mesh sizes and measures peak GPU memory across all 3 pipeline phases (training, cache build, decode) using synthetic DrivAer ML data.
 
 ## Citation
 

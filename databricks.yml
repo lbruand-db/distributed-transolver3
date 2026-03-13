@@ -1,0 +1,36 @@
+bundle:
+  name: transolver3-benchmark
+
+include:
+  - resources/*.yml
+
+variables:
+  gpu_type:
+    description: "GPU profile: a10g, a100_40, or a100_80"
+    default: "a10g"
+  node_type_id:
+    description: "AWS instance type for the GPU cluster"
+    default: "g5.xlarge"
+
+targets:
+  a10g:
+    default: true
+    workspace:
+      host: https://e2-demo-field-eng.cloud.databricks.com/
+    variables:
+      gpu_type: "a10g"
+      node_type_id: "g5.xlarge"
+
+  a100_40:
+    workspace:
+      host: https://e2-demo-field-eng.cloud.databricks.com/
+    variables:
+      gpu_type: "a100_40"
+      node_type_id: "p4d.24xlarge"
+
+  a100_80:
+    workspace:
+      host: https://e2-demo-field-eng.cloud.databricks.com/
+    variables:
+      gpu_type: "a100_80"
+      node_type_id: "p4de.24xlarge"
