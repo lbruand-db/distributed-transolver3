@@ -30,7 +30,7 @@ from transolver3.amortized_training import (
     AmortizedMeshSampler, relative_l2_loss, create_optimizer, create_scheduler,
     train_step,
 )
-from transolver3.normalizer import TargetNormalizer
+from transolver3.normalizer import InputNormalizer, TargetNormalizer
 
 
 def test_attention_shapes():
@@ -827,6 +827,126 @@ def test_train_step_with_normalizer():
     print(f"PASS: train_step with normalizer (loss_with={loss_with:.4f}, loss_without={loss_without:.4f})")
 
 
+def test_input_normalizer_per_sample():
+    """Test InputNormalizer per-sample mode (default)."""
+    B, N, D = 2, 50, 3
+
+    # Coordinates in arbitrary range
+    coords = torch.randn(B, N, D) * 100.0 + 500.0
+
+    normalizer = InputNormalizer(scale=1000.0, per_sample=True)
+
+    encoded = normalizer.encode(coords)
+
+    # Each sample should be in [0, 1000]
+    for b in range(B):
+        assert encoded[b].min().item() >= -1e-5, \
+            f"Sample {b} min={encoded[b].min().item()}, expected >= 0"
+        assert encoded[b].max().item() <= 1000.0 + 1e-5, \
+            f"Sample {b} max={encoded[b].max().item()}, expected <= 1000"
+
+    # Min per sample should be ~0, max ~scale
+    for b in range(B):
+        per_ch_min = encoded[b].min(dim=0).values
+        per_ch_max = encoded[b].max(dim=0).values
+        # At least one channel should hit 0 and 1000
+        assert per_ch_min.min().item() < 1.0, "Some channel min should be near 0"
+        assert per_ch_max.max().item() > 999.0, "Some channel max should be near 1000"
+
+    print("PASS: InputNormalizer per_sample mode — output in [0, scale]")
+
+
+def test_input_normalizer_dataset_level():
+    """Test InputNormalizer dataset-level mode with fit/encode/decode roundtrip."""
+    torch.manual_seed(42)
+    num_samples, N, D = 20, 50, 3
+    coords = torch.randn(num_samples, N, D) * 50.0 + 200.0
+
+    normalizer = InputNormalizer(scale=1000.0, per_sample=False)
+    normalizer.fit(coords)
+
+    assert normalizer.fitted.item() is True
+    assert normalizer.data_min.shape == (1, 1, D)
+    assert normalizer.data_max.shape == (1, 1, D)
+
+    encoded = normalizer.encode(coords)
+
+    # Should be in [0, 1000]
+    assert encoded.min().item() >= -1e-3, f"Min={encoded.min().item()}"
+    assert encoded.max().item() <= 1000.0 + 1e-3, f"Max={encoded.max().item()}"
+
+    # Decode roundtrip
+    decoded = normalizer.decode(encoded)
+    diff = (decoded - coords).abs().max().item()
+    assert diff < 1e-3, f"Roundtrip diff: {diff}"
+
+    print(f"PASS: InputNormalizer dataset-level fit/encode/decode (roundtrip diff: {diff:.2e})")
+
+
+def test_input_normalizer_incremental():
+    """Test InputNormalizer incremental fitting matches full fit."""
+    torch.manual_seed(42)
+    num_samples, N, D = 100, 30, 3
+    coords = torch.randn(num_samples, N, D) * 10.0
+
+    # Full fit
+    norm_full = InputNormalizer(scale=1.0, per_sample=False)
+    norm_full.fit(coords)
+
+    # Incremental fit
+    norm_inc = InputNormalizer(scale=1.0, per_sample=False)
+    batches = [coords[i:i+10] for i in range(0, num_samples, 10)]
+    norm_inc.fit_incremental(iter(batches))
+
+    min_diff = (norm_full.data_min - norm_inc.data_min).abs().max().item()
+    max_diff = (norm_full.data_max - norm_inc.data_max).abs().max().item()
+
+    assert min_diff < 1e-6, f"Incremental min diff: {min_diff}"
+    assert max_diff < 1e-6, f"Incremental max diff: {max_diff}"
+
+    print(f"PASS: InputNormalizer incremental matches full (min diff: {min_diff:.2e}, max diff: {max_diff:.2e})")
+
+
+def test_input_normalizer_scale_factor():
+    """Test different scaling factors."""
+    coords = torch.tensor([[[0.0, 10.0], [5.0, 20.0]]])  # B=1, N=2, D=2
+
+    for scale in [1.0, 100.0, 1000.0]:
+        norm = InputNormalizer(scale=scale)
+        encoded = norm.encode(coords)
+        # Min should be 0, max should be scale (per channel per sample)
+        assert encoded.min().item() < 1e-5
+        assert abs(encoded.max().item() - scale) < 1e-3, \
+            f"scale={scale}: max={encoded.max().item()}"
+
+    print("PASS: InputNormalizer scale factor works correctly")
+
+
+def test_input_normalizer_2d():
+    """Test InputNormalizer with 2D input (N, D)."""
+    coords = torch.randn(50, 3) * 100.0
+
+    normalizer = InputNormalizer(scale=1000.0)
+    encoded = normalizer.encode(coords)
+    assert encoded.shape == (50, 3)
+    assert encoded.min().item() >= -1e-5
+    assert encoded.max().item() <= 1000.0 + 1e-5
+
+    print("PASS: InputNormalizer works with 2D input")
+
+
+def test_input_normalizer_decode_per_sample_raises():
+    """Test that decode raises in per_sample mode."""
+    normalizer = InputNormalizer(per_sample=True)
+    try:
+        normalizer.decode(torch.randn(2, 10, 3))
+        assert False, "Should have raised ValueError"
+    except ValueError as e:
+        assert "per_sample" in str(e)
+
+    print("PASS: InputNormalizer.decode raises in per_sample mode")
+
+
 if __name__ == '__main__':
     print("=" * 60)
     print("Transolver-3 Tests")
@@ -879,6 +999,18 @@ if __name__ == '__main__':
     test_target_normalizer_state_dict()
     test_target_normalizer_device()
     test_train_step_with_normalizer()
+
+    # Input normalization tests
+    print("\n" + "=" * 60)
+    print("Input Normalization Tests")
+    print("=" * 60)
+
+    test_input_normalizer_per_sample()
+    test_input_normalizer_dataset_level()
+    test_input_normalizer_incremental()
+    test_input_normalizer_scale_factor()
+    test_input_normalizer_2d()
+    test_input_normalizer_decode_per_sample_raises()
 
     print("\n" + "=" * 60)
     print("ALL TESTS PASSED")
