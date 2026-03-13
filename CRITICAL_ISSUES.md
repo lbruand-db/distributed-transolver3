@@ -91,9 +91,13 @@ Paper (Table 5): "A tile size of 100k serves as an ideal choice."
 
 **Tests:** `test_resolve_num_tiles`, `test_tile_size_attention`, `test_tile_size_model`
 
-### 9. Input preprocessing
+### ~~9. Input preprocessing~~ — DONE
 
-Paper (Appendix A.3): "Geometric features are typically first normalized using min-max scaling and then optionally multiplied by a constant scaling factor (e.g., 1000)." Our dataset loaders implement this, but the model preprocessing doesn't enforce it.
+Paper (Appendix A.3): "Geometric features are typically first normalized using min-max scaling and then optionally multiplied by a constant scaling factor (e.g., 1000)."
+
+**Fixed:** Added `InputNormalizer` in `transolver3/normalizer.py`. Two modes: `per_sample=True` (default, per-sample min-max, no fitting) and `per_sample=False` (dataset-level, with `fit()`/`fit_incremental()`). Supports configurable `scale` factor. `encode()`/`decode()` roundtrip for dataset-level mode.
+
+**Tests:** `test_input_normalizer_per_sample`, `test_input_normalizer_dataset_level`, `test_input_normalizer_incremental`, `test_input_normalizer_scale_factor`, `test_input_normalizer_2d`, `test_input_normalizer_decode_per_sample_raises`
 
 ### 10. No memory profiling / benchmarking
 
