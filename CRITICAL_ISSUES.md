@@ -75,9 +75,13 @@ All 5 critical bugs have been fixed and verified with 22 tests (9 original + 10 
 
 ## Remaining Improvements (Non-Critical)
 
-### 7. No target normalization
+### ~~7. No target normalization~~ — DONE
 
-Paper (Appendix A.3): "Target outputs are standardized to have zero mean and unit variance across the dataset." Our experiment scripts don't compute or apply dataset-level normalization statistics.
+Paper (Appendix A.3): "Target outputs are standardized to have zero mean and unit variance across the dataset."
+
+**Fixed:** Added `TargetNormalizer` in `transolver3/normalizer.py`. Supports `fit()` (full tensor) and `fit_incremental()` (streaming Welford's for large datasets). `encode()`/`decode()` for training/inference. Registered as `nn.Module` for `state_dict` save/load. Integrated with `train_step` via `normalizer=` parameter.
+
+**Tests:** `test_target_normalizer_fit`, `test_target_normalizer_incremental`, `test_target_normalizer_2d_input`, `test_target_normalizer_state_dict`, `test_target_normalizer_device`, `test_train_step_with_normalizer`
 
 ### ~~8. Tile size configuration~~ — DONE
 
