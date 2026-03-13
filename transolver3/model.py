@@ -61,7 +61,7 @@ class Transolver3(nn.Module):
                                   n_hidden, n_layers=0, res=False, act=act)
 
         if Time_Input:
-            from PDE_Solving_StandardBenchmark.model.Embedding import timestep_embedding
+            from transolver3.common import timestep_embedding
             self.time_fc = nn.Sequential(
                 nn.Linear(n_hidden, n_hidden), nn.SiLU(),
                 nn.Linear(n_hidden, n_hidden),
@@ -129,7 +129,7 @@ class Transolver3(nn.Module):
         fx = fx + self.placeholder[None, None, :]
 
         if T is not None and self.Time_Input:
-            from PDE_Solving_StandardBenchmark.model.Embedding import timestep_embedding
+            from transolver3.common import timestep_embedding
             Time_emb = timestep_embedding(T, self.n_hidden).repeat(1, x.shape[1], 1)
             Time_emb = self.time_fc(Time_emb)
             fx = fx + Time_emb
