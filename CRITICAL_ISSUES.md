@@ -99,6 +99,14 @@ Paper (Appendix A.3): "Geometric features are typically first normalized using m
 
 **Tests:** `test_input_normalizer_per_sample`, `test_input_normalizer_dataset_level`, `test_input_normalizer_incremental`, `test_input_normalizer_scale_factor`, `test_input_normalizer_2d`, `test_input_normalizer_decode_per_sample_raises`
 
-### 10. No memory profiling / benchmarking
+### ~~10. No memory profiling / benchmarking~~ — DONE
 
-The paper's Figure 6 shows precise memory consumption curves. We have no tooling to measure/verify memory savings from tiling.
+The paper's Figure 6 shows precise memory consumption curves.
+
+**Fixed:** Added `transolver3/profiling.py` with:
+- `profile_memory(model, x, ...)` — peak memory for forward or cached inference (CUDA via `torch.cuda` stats, CPU via `tracemalloc`)
+- `profile_latency(model, x, ...)` — wall-clock timing with warmup
+- `benchmark_scaling(model, mesh_sizes, configs)` — sweep mesh sizes × tiling configs, returns structured `MemoryResult`/`LatencyResult` data
+- `format_benchmark_table(results)` — readable text output for comparison
+
+**Tests:** `test_profile_memory_forward`, `test_profile_memory_cached`, `test_profile_latency`, `test_benchmark_scaling`, `test_format_benchmark_table`, `test_tiling_reduces_memory_relative`
