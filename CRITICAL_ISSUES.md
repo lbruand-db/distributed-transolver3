@@ -2,7 +2,7 @@
 
 ## Status: All Critical Issues Fixed
 
-All 5 critical bugs have been fixed and verified with 19 tests (9 original + 10 fix-specific).
+All 5 critical bugs have been fixed and verified with 22 tests (9 original + 10 fix-specific + 3 tile_size).
 
 | Issue | Status | Fix |
 |-------|--------|-----|
@@ -79,9 +79,13 @@ All 5 critical bugs have been fixed and verified with 19 tests (9 original + 10 
 
 Paper (Appendix A.3): "Target outputs are standardized to have zero mean and unit variance across the dataset." Our experiment scripts don't compute or apply dataset-level normalization statistics.
 
-### 8. Tile size configuration
+### ~~8. Tile size configuration~~ — DONE
 
-Paper (Table 5): "A tile size of 100k serves as an ideal choice." We expose `num_tiles` but don't auto-compute the tile count from a target tile size.
+Paper (Table 5): "A tile size of 100k serves as an ideal choice."
+
+**Fixed:** Added `tile_size` parameter to `PhysicsAttentionV3`, `Transolver3Block`, `Transolver3`, and `train_step`. When `tile_size > 0`, `num_tiles = ceil(N / tile_size)` is auto-computed via `_resolve_num_tiles()`. Usage: `model = Transolver3(..., tile_size=100_000)`.
+
+**Tests:** `test_resolve_num_tiles`, `test_tile_size_attention`, `test_tile_size_model`
 
 ### 9. Input preprocessing
 
