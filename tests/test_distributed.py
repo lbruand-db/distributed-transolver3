@@ -1,8 +1,11 @@
-"""Tests for distributed mesh sharding utilities."""
+"""Tests for distributed mesh sharding and distributed inference."""
 
 import torch
 import numpy as np
 import pytest
+
+from transolver3.model import Transolver3
+from transolver3.inference import CachedInference, DistributedCachedInference
 
 from transolver3.distributed import mesh_shard_range
 
@@ -137,3 +140,83 @@ class TestMeshShardedDataset:
         shard_size = N // 4 + (1 if 0 < N % 4 else 0)
         expected = min(shard_size, subset)
         assert sample['surface_x'].shape[0] == expected
+
+
+class TestDistributedCachedInference:
+    """Test DistributedCachedInference falls back correctly in non-distributed mode."""
+
+    @pytest.fixture
+    def model_and_data(self):
+        """Create a small model and synthetic mesh."""
+        B, N, space_dim, out_dim = 1, 200, 6, 2
+        model = Transolver3(
+            space_dim=space_dim, n_layers=3, n_hidden=32, n_head=4,
+            fun_dim=0, out_dim=out_dim, slice_num=8, mlp_ratio=1,
+        )
+        model.eval()
+        x = torch.randn(B, N, space_dim)
+        return model, x
+
+    def test_fallback_matches_cached_inference(self, model_and_data):
+        """Without distributed init, DistributedCachedInference == CachedInference."""
+        model, x = model_and_data
+
+        engine_single = CachedInference(model, cache_chunk_size=50, decode_chunk_size=50)
+        engine_dist = DistributedCachedInference(model, cache_chunk_size=50, decode_chunk_size=50)
+
+        pred_single = engine_single.predict(x)
+        pred_dist = engine_dist.predict(x, gather=False)
+
+        assert pred_single.shape == pred_dist.shape
+        diff = (pred_single - pred_dist).abs().max().item()
+        assert diff < 1e-5, f"Predictions differ by {diff}"
+
+    def test_build_cache_fallback(self, model_and_data):
+        """Cache from distributed engine matches single-GPU cache."""
+        model, x = model_and_data
+
+        cache_single = CachedInference(model, cache_chunk_size=50).build_cache(x)
+        cache_dist = DistributedCachedInference(model, cache_chunk_size=50).build_cache(x)
+
+        assert len(cache_single) == len(cache_dist)
+        for s, d in zip(cache_single, cache_dist):
+            diff = (s - d).abs().max().item()
+            assert diff < 1e-5, f"Cache differs by {diff}"
+
+    def test_manual_shard_simulation(self, model_and_data):
+        """Simulate 2-rank sharding without actual distributed: split mesh,
+        accumulate s_raw/d manually, verify cache matches single-GPU."""
+        model, x = model_and_data
+        B, N, C = x.shape
+
+        # Single-GPU cache (ground truth)
+        cache_full = model.cache_physical_states(x, chunk_size=50)
+
+        # Simulate 2 shards: split x into two halves
+        x0 = x[:, :N//2]
+        x1 = x[:, N//2:]
+
+        # Each "rank" preprocesses and accumulates locally
+        fx0 = model._preprocess(x0)
+        fx1 = model._preprocess(x1)
+
+        cache_simulated = []
+        for block_idx, block in enumerate(model.blocks):
+            s_raw_0, d_0 = block.compute_physical_state(fx0)
+            s_raw_1, d_1 = block.compute_physical_state(fx1)
+
+            # Simulated all-reduce (just add)
+            s_raw_total = s_raw_0 + s_raw_1
+            d_total = d_0 + d_1
+
+            s_out = block.compute_cached_state(s_raw_total, d_total)
+            cache_simulated.append(s_out)
+
+            # Advance through block
+            fx0 = block(fx0)
+            fx1 = block(fx1)
+
+        # Compare: sharded accumulation should match single-GPU
+        for layer_idx, (s_full, s_sim) in enumerate(zip(cache_full, cache_simulated)):
+            diff = (s_full - s_sim).abs().max().item()
+            assert diff < 1e-4, f"Layer {layer_idx}: cache differs by {diff}"

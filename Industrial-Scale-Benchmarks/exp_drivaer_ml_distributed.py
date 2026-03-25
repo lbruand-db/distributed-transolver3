@@ -30,7 +30,7 @@ from transolver3.amortized_training import (
     AmortizedMeshSampler, relative_l2_loss,
     create_optimizer, create_scheduler,
 )
-from transolver3.inference import CachedInference
+from transolver3.inference import CachedInference, DistributedCachedInference
 from transolver3.distributed import (
     setup_distributed, cleanup, is_main_process, get_device,
 )
@@ -62,6 +62,11 @@ def parse_args():
     parser.add_argument('--no-shard-mesh', action='store_true', dest='no_shard_mesh',
                         help='Disable mesh sharding. Each GPU loads the full mesh '
                              '(classic DDP). Use for smaller meshes that fit in RAM.')
+    parser.add_argument('--shard-eval', action='store_true', dest='shard_eval',
+                        help='Use distributed sharded inference for evaluation. '
+                             'Each GPU processes its mesh shard; cache accumulators '
+                             'are all-reduced (~514 KB/layer). Required for meshes '
+                             'that do not fit in single-node memory.')
     return parser.parse_args()
 
 
@@ -108,31 +113,49 @@ def train_epoch(model, dataloader, optimizer, scheduler, sampler, args, device):
 
 
 @torch.no_grad()
-def evaluate(model, dataloader, args, device):
-    """Evaluate using cached inference. Runs on all ranks but only rank 0 reports.
+def evaluate(model, dataloader, args, device, sharded=False):
+    """Evaluate using cached inference.
 
-    For now, each rank evaluates independently on its own shard of the test
-    data. For exact metrics, use a non-sharded test loader on rank 0.
+    Args:
+        model: DDP-wrapped or raw model
+        dataloader: test DataLoader (sharded or full depending on mode)
+        args: parsed arguments
+        device: torch device
+        sharded: if True, use DistributedCachedInference where each rank
+                 processes its mesh shard and all-reduces the tiny cache
+                 accumulators. If False, rank 0 evaluates on full data.
     """
-    # Unwrap DDP for inference
     raw_model = model.module if hasattr(model, 'module') else model
     raw_model.eval()
     all_errors = []
     x_key, t_key = get_field_key(args.field)
 
-    engine = CachedInference(
-        raw_model,
-        cache_chunk_size=args.cache_chunk_size,
-        decode_chunk_size=args.decode_chunk_size,
-        num_tiles=args.num_tiles,
-    )
+    if sharded:
+        engine = DistributedCachedInference(
+            raw_model,
+            cache_chunk_size=args.cache_chunk_size,
+            decode_chunk_size=args.decode_chunk_size,
+            num_tiles=args.num_tiles,
+        )
+    else:
+        engine = CachedInference(
+            raw_model,
+            cache_chunk_size=args.cache_chunk_size,
+            decode_chunk_size=args.decode_chunk_size,
+            num_tiles=args.num_tiles,
+        )
 
     for batch in dataloader:
         x = batch[x_key].to(device)
         target = batch[t_key].to(device)
 
-        cache = engine.build_cache(x)
-        pred = engine.decode(x, cache)
+        if sharded:
+            # Each rank has its local shard; build_cache all-reduces accumulators
+            cache = engine.build_cache(x)
+            pred = engine.decode(x, cache)
+        else:
+            cache = engine.build_cache(x)
+            pred = engine.decode(x, cache)
 
         diff_norm = torch.norm(pred - target, p=2, dim=(1, 2))
         target_norm = torch.norm(target, p=2, dim=(1, 2))
@@ -140,8 +163,17 @@ def evaluate(model, dataloader, args, device):
         all_errors.append(error.cpu())
 
     if all_errors:
-        return torch.cat(all_errors).mean().item()
-    return float('inf')
+        mean_error = torch.cat(all_errors).mean().item()
+    else:
+        mean_error = float('inf')
+
+    if sharded and dist.is_initialized():
+        # Average the error across ranks for consistent reporting
+        error_tensor = torch.tensor([mean_error], device=device)
+        dist.all_reduce(error_tensor, op=dist.ReduceOp.SUM)
+        mean_error = error_tensor.item() / dist.get_world_size()
+
+    return mean_error
 
 
 def main():
@@ -171,10 +203,12 @@ def main():
         shard_id=rank if shard_mesh else None,
         num_shards=world_size if shard_mesh else None,
     )
-    # Test: rank 0 evaluates on full (non-sharded) test data
+    # Test dataset: sharded if --shard-eval, otherwise full mesh on rank 0
     test_dataset = DrivAerMLDataset(
         args.data_dir, split='test', field=args.field,
         subset_size=None,
+        shard_id=rank if args.shard_eval else None,
+        num_shards=world_size if args.shard_eval else None,
     )
 
     # DistributedSampler ensures each rank sees different samples when
@@ -219,8 +253,12 @@ def main():
         log(f"Loaded checkpoint: {args.checkpoint}")
 
     if args.eval_only:
-        if is_main_process():
-            error = evaluate(model, test_loader, args, device)
+        if args.shard_eval:
+            # All ranks participate in sharded eval
+            error = evaluate(model, test_loader, args, device, sharded=True)
+            log(f"Test relative L2 error: {error:.4f} ({error*100:.2f}%)")
+        elif is_main_process():
+            error = evaluate(model, test_loader, args, device, sharded=False)
             log(f"Test relative L2 error: {error:.4f} ({error*100:.2f}%)")
         cleanup()
         return
@@ -246,21 +284,32 @@ def main():
                                   mesh_sampler, args, device)
         t1 = time.time()
 
-        # Evaluate on rank 0 only (non-sharded test data)
+        # Evaluate
         if (epoch + 1) % 10 == 0 or epoch == args.epochs - 1:
-            if is_main_process():
-                test_error = evaluate(model, test_loader, args, device)
+            if args.shard_eval:
+                # All ranks participate in sharded eval
+                test_error = evaluate(model, test_loader, args, device, sharded=True)
                 log(f"Epoch {epoch+1}/{args.epochs} | "
                     f"train_loss={train_loss:.6f} | "
                     f"test_L2={test_error:.4f} ({test_error*100:.2f}%) | "
                     f"time={t1-t0:.1f}s")
-                if test_error < best_error:
+                if is_main_process() and test_error < best_error:
                     best_error = test_error
                     torch.save(model.module.state_dict(),
                                os.path.join(args.save_dir, 'best_model.pt'))
-            # Synchronize so all ranks wait for eval to finish
-            if dist.is_initialized():
-                dist.barrier()
+            else:
+                if is_main_process():
+                    test_error = evaluate(model, test_loader, args, device, sharded=False)
+                    log(f"Epoch {epoch+1}/{args.epochs} | "
+                        f"train_loss={train_loss:.6f} | "
+                        f"test_L2={test_error:.4f} ({test_error*100:.2f}%) | "
+                        f"time={t1-t0:.1f}s")
+                    if test_error < best_error:
+                        best_error = test_error
+                        torch.save(model.module.state_dict(),
+                                   os.path.join(args.save_dir, 'best_model.pt'))
+                if dist.is_initialized():
+                    dist.barrier()
         else:
             log(f"Epoch {epoch+1}/{args.epochs} | "
                 f"train_loss={train_loss:.6f} | time={t1-t0:.1f}s")
