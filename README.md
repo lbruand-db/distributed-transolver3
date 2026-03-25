@@ -27,7 +27,10 @@ uv run pytest        # run tests (52 tests)
 ## Get Started
 
 ```python
+import mlflow
+import torch
 from transolver3 import Transolver3, CachedInference, InputNormalizer, TargetNormalizer
+from transolver3.amortized_training import train_step, create_optimizer, create_scheduler
 
 # Create model
 model = Transolver3(
@@ -37,15 +40,24 @@ model = Transolver3(
     mlp_chunk_size=100_000,  # tile MLP for large N
 )
 
-# Training with mixed precision
-from transolver3.amortized_training import train_step, create_optimizer, create_scheduler
-
+# Training with mixed precision + MLflow tracking
 optimizer = create_optimizer(model)
 scheduler = create_scheduler(optimizer, total_steps=50000)
 scaler = torch.amp.GradScaler()
 
-loss = train_step(model, x, fx, target, optimizer, scheduler,
-                  tile_size=100_000, scaler=scaler)
+with mlflow.start_run(run_name="drivaer-ml-24L-256H"):
+    mlflow.log_params({
+        "n_layers": 24, "n_hidden": 256, "n_head": 8,
+        "slice_num": 64, "tile_size": 100_000,
+    })
+
+    for step in range(50000):
+        loss = train_step(model, x, fx, target, optimizer, scheduler,
+                          tile_size=100_000, scaler=scaler)
+        mlflow.log_metric("train_loss", loss, step=step)
+
+    # Log the trained model
+    mlflow.pytorch.log_model(model, artifact_path="transolver3")
 
 # Inference on industrial-scale meshes (160M+ cells)
 engine = CachedInference(model, cache_chunk_size=100_000, decode_chunk_size=50_000)
