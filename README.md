@@ -2,7 +2,7 @@
 
 Scaling Transformer Solvers to Industrial-Scale Geometries (100M+ cells).
 
-Based on [Transolver](https://arxiv.org/abs/2402.02366) (ICML 2024 Spotlight) and the [Transolver-3 paper](https://arxiv.org/pdf/2602.04940).
+Based on the [Transolver paper](https://arxiv.org/abs/2402.02366) (ICML 2024 Spotlight) and the [Transolver-3 paper](https://arxiv.org/pdf/2602.04940).
 
 ## Key Innovations
 
@@ -185,6 +185,11 @@ Includes experiments comparing Transolver v1 and v3 on both synthetic and real D
   booktitle={International Conference on Machine Learning},
   year={2024}
 }
-```
 
-For Transolver v1 code (standard benchmarks, airfoil/car design tasks), see the [upstream repo](https://github.com/thuml/Transolver).
+@article{wu2026Transolver3,
+  title={Transolver++: Industrial-Scale Simulation with Transformer Solvers},
+  author={Haixu Wu and Huakun Luo and Haowen Wang and Jianmin Wang and Mingsheng Long},
+  journal={arXiv preprint arXiv:2602.04940},
+  year={2026}
+}
+```
