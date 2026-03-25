@@ -72,40 +72,40 @@ from transolver3.inference import CachedInference
 
 GPU_PROFILES = {
     "a10g": {
-        "description": "NVIDIA A10G (g5.xlarge) — 24 GB",
+        "description": "NVIDIA A10G (g5.xlarge) — 24 GB — paper config",
         "instance_type": "g5.xlarge",
         "model": dict(
-            space_dim=22, n_layers=8, n_hidden=256, n_head=8,
-            slice_num=32, fun_dim=0, out_dim=4, mlp_ratio=1,
+            space_dim=22, n_layers=24, n_hidden=256, n_head=8,
+            slice_num=64, fun_dim=0, out_dim=4, mlp_ratio=1,
         ),
-        "subset_size": 50_000,
-        "tile_size": 50_000,
-        "mlp_chunk_size": 50_000,
+        "subset_size": 800_000,
+        "tile_size": 100_000,
+        "mlp_chunk_size": 100_000,
         "cache_chunk_size": 100_000,
         "decode_chunk_size": 50_000,
         "use_fp16": True,
         "mesh_sizes": [
-            50_000, 200_000, 500_000, 1_000_000,
-            2_000_000, 4_000_000, 6_000_000, 8_000_000,
+            50_000, 100_000, 200_000, 400_000, 800_000,
+            1_000_000, 2_000_000, 4_000_000, 8_000_000,
         ],
         "train_steps": 3,
     },
     "a100_40": {
-        "description": "NVIDIA A100 40 GB (p4d.24xlarge)",
+        "description": "NVIDIA A100 40 GB (p4d.24xlarge) — paper config",
         "instance_type": "p4d.24xlarge",
         "model": dict(
             space_dim=22, n_layers=24, n_hidden=256, n_head=8,
             slice_num=64, fun_dim=0, out_dim=4, mlp_ratio=1,
         ),
-        "subset_size": 200_000,
+        "subset_size": 800_000,
         "tile_size": 100_000,
         "mlp_chunk_size": 100_000,
         "cache_chunk_size": 200_000,
         "decode_chunk_size": 100_000,
         "use_fp16": True,
         "mesh_sizes": [
-            10_000, 50_000, 100_000, 400_000,
-            1_000_000, 2_000_000, 4_000_000,
+            50_000, 100_000, 200_000, 400_000, 800_000,
+            1_000_000, 2_000_000, 4_000_000, 8_000_000,
         ],
         "train_steps": 3,
     },
@@ -341,27 +341,38 @@ def run_benchmark(gpu_type):
             row["train"] = result
             row["status"] = "OOM_TRAIN"
 
-        # --- Phase 2: Cache Build ---
+        # --- Phase 2: Cache Build (runs even if training OOMed) ---
         cache = None
         engine = None
-        if row["status"] == "OK":
-            result = run_oom_safe(
-                lambda: benchmark_cache_build(model, N, profile, device),
-                "Cache",
-            )
-            if isinstance(result, tuple):
-                # Success: (metrics_dict, cache, engine)
-                cache_result, cache, engine = result
-                row["cache"] = cache_result
-                print(f"  Cache:  {cache_result['peak_mb']:>8,.1f} MB | "
-                      f"{cache_result['time_s']:.2f}s")
-            else:
-                # OOM: run_oom_safe returned a dict with error info
-                row["cache"] = result
+        # Recreate model after OOM to get clean state
+        if row["status"] == "OOM_TRAIN":
+            del model
+            gc.collect()
+            torch.cuda.empty_cache()
+            model = Transolver3(
+                **model_cfg,
+                tile_size=profile["tile_size"],
+                mlp_chunk_size=profile["mlp_chunk_size"],
+            ).to(device)
+
+        result = run_oom_safe(
+            lambda: benchmark_cache_build(model, N, profile, device),
+            "Cache",
+        )
+        if isinstance(result, tuple):
+            # Success: (metrics_dict, cache, engine)
+            cache_result, cache, engine = result
+            row["cache"] = cache_result
+            print(f"  Cache:  {cache_result['peak_mb']:>8,.1f} MB | "
+                  f"{cache_result['time_s']:.2f}s")
+        else:
+            # OOM: run_oom_safe returned a dict with error info
+            row["cache"] = result
+            if row["status"] == "OK":
                 row["status"] = "OOM_CACHE"
 
-        # --- Phase 3: Decode ---
-        if cache is not None and engine is not None and row["status"] == "OK":
+        # --- Phase 3: Decode (runs even if training OOMed) ---
+        if cache is not None and engine is not None:
             result = run_oom_safe(
                 lambda: benchmark_decode(engine, N, cache, profile, device),
                 "Decode",
