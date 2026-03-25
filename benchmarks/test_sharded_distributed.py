@@ -49,6 +49,28 @@ import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 
+
+def _ensure_path():
+    """Ensure transolver3 is importable. Called in every subprocess."""
+    import sys, os
+    try:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+    except NameError:
+        script_dir = os.getcwd()
+    repo_root = os.path.dirname(script_dir)
+    if not os.path.isdir(os.path.join(repo_root, "transolver3")):
+        test_dir = script_dir
+        for _ in range(5):
+            test_dir = os.path.dirname(test_dir)
+            if os.path.isdir(os.path.join(test_dir, "transolver3")):
+                repo_root = test_dir
+                break
+    if repo_root not in sys.path:
+        sys.path.insert(0, repo_root)
+
+
+_ensure_path()
+
 from transolver3.model import Transolver3
 from transolver3.amortized_training import (
     AmortizedMeshSampler, relative_l2_loss,
@@ -242,13 +264,14 @@ def test_sharded_decode(rank, world_size, device, model_ddp, cache):
 
 
 def main():
+    _ensure_path()  # needed when called via TorchDistributor (pickled function)
     rank, world_size = setup_distributed()
     device = get_device()
 
     log(f"Running on {world_size} {'GPU' if device.type == 'cuda' else 'CPU'} workers", rank)
     if device.type == 'cuda':
         log(f"  GPU: {torch.cuda.get_device_name(device)}", rank)
-        log(f"  VRAM: {torch.cuda.get_device_properties(device).total_mem / 1e9:.1f} GB", rank)
+        log(f"  VRAM: {torch.cuda.get_device_properties(device).total_memory / 1e9:.1f} GB", rank)
 
     results = {'world_size': world_size, 'device': str(device), 'tests': {}}
 
@@ -294,15 +317,35 @@ def main():
 
 
 def launch_on_databricks(num_gpus=2):
-    """Launch via TorchDistributor on Databricks."""
+    """Launch via TorchDistributor on Databricks.
+
+    Uses file-based mode (passing script path) so that torchrun
+    executes the script from scratch in each subprocess, avoiding
+    pickle/import issues with transolver3.
+    """
     from pyspark.ml.torch.distributor import TorchDistributor
+    # Resolve the path to this script file.
+    # On Databricks, spark_python_task runs via exec() so __file__ may not exist.
+    # Fall back to sys.argv or the known bundle path.
+    try:
+        script_path = os.path.abspath(__file__)
+    except NameError:
+        # Databricks exec() context: reconstruct from sys.argv or SCRIPT_DIR
+        script_path = os.path.join(SCRIPT_DIR, 'test_sharded_distributed.py')
+        if not os.path.exists(script_path):
+            # Try argv
+            for arg in sys.argv:
+                if 'test_sharded_distributed' in arg:
+                    script_path = arg
+                    break
     print(f"[LAUNCH] Starting TorchDistributor with {num_gpus} GPUs")
+    print(f"[LAUNCH] Script: {script_path}")
     distributor = TorchDistributor(
         num_processes=num_gpus,
         local_mode=True,
         use_gpu=True,
     )
-    distributor.run(main)
+    distributor.run(script_path)
 
 
 if __name__ == '__main__':
