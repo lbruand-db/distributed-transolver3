@@ -1,0 +1,30 @@
+resources:
+  jobs:
+    distributed_sharded_test:
+      name: "[${bundle.target}] Transolver-3 Distributed Sharded Test"
+
+      tasks:
+        - task_key: "test_sharded"
+          spark_python_task:
+            python_file: ../benchmarks/test_sharded_distributed.py
+            parameters:
+              - "--databricks"
+              - "--num_gpus"
+              - "2"
+          new_cluster:
+            # g5.12xlarge: 4× A10G 24GB, 192 GB RAM, NVSwitch
+            # We use 2 of the 4 GPUs for the test
+            spark_version: "15.4.x-gpu-ml-scala2.12"
+            node_type_id: "g5.12xlarge"
+            num_workers: 0
+            spark_conf:
+              spark.databricks.cluster.profile: "singleNode"
+              spark.master: "local[*]"
+              spark.task.resource.gpu.amount: "4"
+            custom_tags:
+              ResourceClass: "SingleNode"
+          libraries:
+            - pypi:
+                package: "einops>=0.7"
+            - pypi:
+                package: "timm>=1.0"
