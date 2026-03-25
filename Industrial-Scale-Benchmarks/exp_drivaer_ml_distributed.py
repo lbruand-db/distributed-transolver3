@@ -59,6 +59,9 @@ def parse_args():
     parser.add_argument('--eval_only', action='store_true')
     parser.add_argument('--checkpoint', type=str, default=None)
     parser.add_argument('--seed', type=int, default=42)
+    parser.add_argument('--no-shard-mesh', action='store_true', dest='no_shard_mesh',
+                        help='Disable mesh sharding. Each GPU loads the full mesh '
+                             '(classic DDP). Use for smaller meshes that fit in RAM.')
     return parser.parse_args()
 
 
@@ -152,19 +155,23 @@ def main():
     if is_main_process():
         os.makedirs(args.save_dir, exist_ok=True)
 
-    # Per-GPU subset size: total / world_size
+    # Mesh sharding: each GPU loads only 1/K of the mesh from disk.
+    # With --no-shard-mesh: every GPU loads the full mesh (classic DDP).
+    shard_mesh = not args.no_shard_mesh and world_size > 1
+
+    # Per-GPU subset size
     local_subset_size = args.subset_size // world_size
     log(f"Total subset: {args.subset_size:,}, per-GPU: {local_subset_size:,}")
+    log(f"Mesh sharding: {'ON (each GPU loads 1/{0} of mesh)'.format(world_size) if shard_mesh else 'OFF (full mesh on each GPU)'}")
 
-    # --- Datasets with mesh sharding ---
-    # Training: each rank loads only its shard of the mesh (mmap range reads)
+    # --- Datasets ---
     train_dataset = DrivAerMLDataset(
         args.data_dir, split='train', field=args.field,
         subset_size=local_subset_size,
-        shard_id=rank, num_shards=world_size,
+        shard_id=rank if shard_mesh else None,
+        num_shards=world_size if shard_mesh else None,
     )
     # Test: rank 0 evaluates on full (non-sharded) test data
-    # Other ranks get a dummy loader (they skip eval)
     test_dataset = DrivAerMLDataset(
         args.data_dir, split='test', field=args.field,
         subset_size=None,
