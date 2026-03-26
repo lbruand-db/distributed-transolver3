@@ -19,6 +19,9 @@ test = [
 benchmark = [
     "matplotlib>=3.7",
 ]
+demo = [
+    "claude-agent-sdk>=0.1.39",
+]
 databricks = [
     "pyspark>=3.5",
     "delta-spark>=3.0",
