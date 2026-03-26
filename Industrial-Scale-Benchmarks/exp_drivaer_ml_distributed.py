@@ -194,7 +194,8 @@ def main():
     # Per-GPU subset size
     local_subset_size = args.subset_size // world_size
     log(f"Total subset: {args.subset_size:,}, per-GPU: {local_subset_size:,}")
-    log(f"Mesh sharding: {'ON (each GPU loads 1/{0} of mesh)'.format(world_size) if shard_mesh else 'OFF (full mesh on each GPU)'}")
+    shard_msg = f"ON (each GPU loads 1/{world_size} of mesh)" if shard_mesh else "OFF (full mesh on each GPU)"
+    log(f"Mesh sharding: {shard_msg}")
 
     # --- Datasets ---
     train_dataset = DrivAerMLDataset(

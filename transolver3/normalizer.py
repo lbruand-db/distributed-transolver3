@@ -109,7 +109,6 @@ class InputNormalizer(nn.Module):
         """
         if self.per_sample:
             # Compute min/max per sample (dims except last)
-            orig_shape = x.shape
             if x.ndim == 2:
                 # (N, D) — single sample
                 x_min = x.min(dim=0, keepdim=True).values

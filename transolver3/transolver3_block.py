@@ -5,10 +5,8 @@ Fix #3: MLP and LayerNorm can be processed in tiles for large N,
 avoiding O(N * hidden * mlp_ratio) peak memory in a single allocation.
 """
 
-import math
 import torch
 import torch.nn as nn
-from torch.utils.checkpoint import checkpoint
 from transolver3.common import MLP
 from transolver3.physics_attention_v3 import PhysicsAttentionV3
 
@@ -75,12 +73,14 @@ class Transolver3Block(nn.Module):
 
     def _mlp_residual(self, fx):
         """LN + MLP residual, possibly chunked for large N."""
-        fn = lambda x: self.mlp(self.ln_2(x))
+        def fn(x):
+            return self.mlp(self.ln_2(x))
         return _pointwise_chunked(fn, fx, self.mlp_chunk_size) + fx
 
     def _last_layer_head(self, fx):
         """Final projection, possibly chunked."""
-        fn = lambda x: self.mlp2(self.ln_3(x))
+        def fn(x):
+            return self.mlp2(self.ln_3(x))
         return _pointwise_chunked(fn, fx, self.mlp_chunk_size)
 
     def forward(self, fx, num_tiles=0, tile_size=0):

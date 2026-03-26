@@ -20,7 +20,6 @@ import os
 import sys
 import time
 import json
-import tempfile
 import numpy as np
 
 # --- Path setup (same pattern as gpu_memory_benchmark.py) ---
@@ -45,14 +44,15 @@ if not os.path.isdir(os.path.join(REPO_ROOT, "transolver3")):
             sys.path.insert(0, REPO_ROOT)
             break
 
-import torch
-import torch.distributed as dist
-from torch.nn.parallel import DistributedDataParallel as DDP
+import torch  # noqa: E402
+import torch.distributed as dist  # noqa: E402
+from torch.nn.parallel import DistributedDataParallel as DDP  # noqa: E402
 
 
 def _ensure_path():
     """Ensure transolver3 is importable. Called in every subprocess."""
-    import sys, os
+    import sys
+    import os
     try:
         script_dir = os.path.dirname(os.path.abspath(__file__))
     except NameError:
@@ -71,13 +71,13 @@ def _ensure_path():
 
 _ensure_path()
 
-from transolver3.model import Transolver3
-from transolver3.amortized_training import (
+from transolver3.model import Transolver3  # noqa: E402
+from transolver3.amortized_training import (  # noqa: E402
     AmortizedMeshSampler, relative_l2_loss,
     create_optimizer, create_scheduler,
 )
-from transolver3.inference import CachedInference, DistributedCachedInference
-from transolver3.distributed import (
+from transolver3.inference import DistributedCachedInference  # noqa: E402
+from transolver3.distributed import (  # noqa: E402
     setup_distributed, cleanup, is_main_process, get_device, mesh_shard_range,
 )
 
@@ -178,7 +178,7 @@ def test_sharded_training(rank, world_size, device):
 
 def test_sharded_cache_correctness(rank, world_size, device, model_ddp):
     """Test: sharded cache build produces same result as single-GPU."""
-    log(f"=== Test 2: Sharded Cache Correctness ===", rank)
+    log("=== Test 2: Sharded Cache Correctness ===", rank)
     cfg = CFG
 
     raw_model = model_ddp.module if hasattr(model_ddp, 'module') else model_ddp
@@ -223,7 +223,7 @@ def test_sharded_cache_correctness(rank, world_size, device, model_ddp):
 
 def test_sharded_decode(rank, world_size, device, model_ddp, cache):
     """Test: sharded decode produces same predictions as single-GPU."""
-    log(f"=== Test 3: Sharded Decode ===", rank)
+    log("=== Test 3: Sharded Decode ===", rank)
     cfg = CFG
 
     raw_model = model_ddp.module if hasattr(model_ddp, 'module') else model_ddp

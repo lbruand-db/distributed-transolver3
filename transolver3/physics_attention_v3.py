@@ -58,7 +58,6 @@ def _slice_aggregate(w, x, heads):
         s_raw: (B, H, M, C)
     """
     B, H, N, M = w.shape
-    C = x.shape[2]
     # w transposed: (B, H, M, N), x expanded: (B, 1, N, C) -> (B, H, N, C)
     # matmul: (B, H, M, N) @ (B, H, N, C) -> (B, H, M, C)
     # Expand x without materializing the full (B,H,N,C) tensor in memory:

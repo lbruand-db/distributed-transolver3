@@ -14,9 +14,7 @@ Usage:
 import sys
 import os
 import argparse
-import time
 import torch
-import torch.nn as nn
 import numpy as np
 import matplotlib
 matplotlib.use('Agg')
@@ -31,7 +29,6 @@ from compare_v1_v3_drivaer import (
     TransolverV1, SyntheticDrivAerML, train_and_evaluate
 )
 from transolver3.model import Transolver3
-from transolver3.amortized_training import AmortizedMeshSampler, relative_l2_loss
 
 
 def parse_args():
@@ -200,8 +197,8 @@ def main():
     fig.suptitle('Surface Pressure — Top-Down View (x, z)', fontsize=14, fontweight='bold', y=1.02)
 
     sc0 = render_surface_pressure(c3d, gt_p, 'Ground Truth', axes[0], vmin, vmax)
-    sc1 = render_surface_pressure(c3d, v1_p, 'Transolver v1', axes[1], vmin, vmax)
-    sc2 = render_surface_pressure(c3d, v3_p, 'Transolver v3', axes[2], vmin, vmax)
+    render_surface_pressure(c3d, v1_p, 'Transolver v1', axes[1], vmin, vmax)
+    render_surface_pressure(c3d, v3_p, 'Transolver v3', axes[2], vmin, vmax)
 
     cbar = fig.colorbar(sc0, ax=axes, orientation='vertical', fraction=0.02, pad=0.04)
     cbar.set_label('Pressure', fontsize=11)
@@ -218,8 +215,8 @@ def main():
     fig, axes = plt.subplots(1, 3, figsize=(18, 5))
     fig.suptitle('Surface Pressure — Side View (x, y)', fontsize=14, fontweight='bold', y=1.02)
 
-    sc0 = render_side_view(c3d, gt_p, 'Ground Truth', axes[0], vmin, vmax)
-    sc1 = render_side_view(c3d, v1_p, 'Transolver v1', axes[1], vmin, vmax)
+    render_side_view(c3d, gt_p, 'Ground Truth', axes[0], vmin, vmax)
+    render_side_view(c3d, v1_p, 'Transolver v1', axes[1], vmin, vmax)
     sc2 = render_side_view(c3d, v3_p, 'Transolver v3', axes[2], vmin, vmax)
 
     cbar = fig.colorbar(sc0, ax=axes, orientation='vertical', fraction=0.02, pad=0.04)
@@ -237,7 +234,7 @@ def main():
     fig, axes = plt.subplots(1, 2, figsize=(13, 5))
     fig.suptitle('Absolute Pressure Error — Top-Down View', fontsize=14, fontweight='bold', y=1.02)
 
-    sc1 = render_error_map(c3d, v1_e, f'v1 Error (mean={v1_error.mean():.4f})', axes[0], err_vmax)
+    render_error_map(c3d, v1_e, f'v1 Error (mean={v1_error.mean():.4f})', axes[0], err_vmax)
     sc2 = render_error_map(c3d, v3_e, f'v3 Error (mean={v3_error.mean():.4f})', axes[1], err_vmax)
 
     cbar = fig.colorbar(sc2, ax=axes, orientation='vertical', fraction=0.02, pad=0.04)

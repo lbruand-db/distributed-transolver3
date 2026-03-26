@@ -16,7 +16,6 @@ Verifies:
 
 import sys
 import os
-import math
 import torch
 import torch.nn as nn
 
@@ -436,7 +435,11 @@ def test_fix4_streaming_cache():
     diff_out = (out_full - out_chunked).abs().max().item()
     assert diff_out < 1e-3, f"Decoded output diff: {diff_out}"
 
-    print(f"PASS: Fix #4 — streaming cache matches full (cache max diff: {max((cf - cc.to(cf.device)).abs().max().item() for cf, cc in zip(cache_full, cache_chunked)):.2e}, output diff: {diff_out:.2e})")
+    cache_diff = max(
+        (cf - cc.to(cf.device)).abs().max().item() for cf, cc in zip(cache_full, cache_chunked)
+    )
+    print(f"PASS: Fix #4 — streaming cache matches full "
+          f"(cache max diff: {cache_diff:.2e}, output diff: {diff_out:.2e})")
 
 
 def test_fix4_memory_pattern():
@@ -604,11 +607,11 @@ def test_inner_dim_assertion():
     """Test that inner_dim != dim raises an assertion error."""
     try:
         # dim=64, heads=4, dim_head=32 -> inner_dim=128 != 64
-        attn = PhysicsAttentionV3(64, heads=4, dim_head=32, slice_num=8)
+        PhysicsAttentionV3(64, heads=4, dim_head=32, slice_num=8)
         assert False, "Should have raised AssertionError"
     except AssertionError as e:
         assert "inner_dim == dim" in str(e)
-        print(f"PASS: inner_dim != dim correctly raises AssertionError")
+        print("PASS: inner_dim != dim correctly raises AssertionError")
 
 
 def test_resolve_num_tiles():
@@ -678,7 +681,7 @@ def test_tile_size_model():
     diff = (out_ctor - out_ref).abs().max().item()
     assert diff < 1e-5, f"Constructor tile_size vs num_tiles diff: {diff}"
 
-    print(f"PASS: model tile_size works at constructor and forward levels")
+    print("PASS: model tile_size works at constructor and forward levels")
 
 
 def test_target_normalizer_fit():
@@ -750,7 +753,7 @@ def test_target_normalizer_2d_input():
     decoded = normalizer.decode(encoded)
     diff = (decoded - targets).abs().max().item()
     assert diff < 1e-5, f"2D roundtrip diff: {diff}"
-    print(f"PASS: TargetNormalizer works with 2D input")
+    print("PASS: TargetNormalizer works with 2D input")
 
 
 def test_target_normalizer_state_dict():
@@ -860,13 +863,13 @@ def test_train_step_mixed_precision():
                           scaler=scaler)
         losses.append(loss)
 
-    assert all(isinstance(l, float) and l > 0 for l in losses)
+    assert all(isinstance(v, float) and v > 0 for v in losses)
 
     # Without scaler should also still work
     loss_no_scaler = train_step(model, x, None, target, optimizer, scheduler)
     assert isinstance(loss_no_scaler, float) and loss_no_scaler > 0
 
-    print(f"PASS: train_step mixed precision (losses: {[f'{l:.4f}' for l in losses]})")
+    print(f"PASS: train_step mixed precision (losses: {[f'{v:.4f}' for v in losses]})")
 
 
 def test_input_normalizer_per_sample():

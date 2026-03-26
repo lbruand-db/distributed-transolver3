@@ -61,7 +61,6 @@ class Transolver3(nn.Module):
                                   n_hidden, n_layers=0, res=False, act=act)
 
         if Time_Input:
-            from transolver3.common import timestep_embedding
             self.time_fc = nn.Sequential(
                 nn.Linear(n_hidden, n_hidden), nn.SiLU(),
                 nn.Linear(n_hidden, n_hidden),

@@ -22,7 +22,6 @@ import sys
 import json
 import time
 import gc
-import traceback
 
 # --- Path setup: find transolver3 package ---
 try:
@@ -54,17 +53,16 @@ if not os.path.isdir(os.path.join(REPO_ROOT, "transolver3")):
 
 # einops and timm are installed via DAB job libraries or pip
 
-import torch
-import torch.nn as nn
+import torch  # noqa: E402
 
-from transolver3.model import Transolver3
-from transolver3.amortized_training import (
+from transolver3.model import Transolver3  # noqa: E402
+from transolver3.amortized_training import (  # noqa: E402
     AmortizedMeshSampler,
     train_step,
     create_optimizer,
     create_scheduler,
 )
-from transolver3.inference import CachedInference
+from transolver3.inference import CachedInference  # noqa: E402
 
 # ═══════════════════════════════════════════════════════════════════
 # GPU PROFILES
@@ -293,7 +291,7 @@ def run_benchmark(gpu_type):
     gpu_name, gpu_total_mb = gpu_info()
 
     print(f"\n{'=' * 72}")
-    print(f"  Transolver-3 GPU Memory Benchmark")
+    print("  Transolver-3 GPU Memory Benchmark")
     print(f"{'=' * 72}")
     print(f"  GPU:        {gpu_name} ({gpu_total_mb:,.0f} MB)")
     print(f"  Profile:    {gpu_type} — {profile['description']}")
@@ -330,7 +328,7 @@ def run_benchmark(gpu_type):
 
         # --- Phase 1: Training ---
         result = run_oom_safe(
-            lambda: benchmark_training(model, N, profile, device),
+            lambda: benchmark_training(model, N, profile, device),  # noqa: F821
             "Train",
         )
         if result and result.get("peak_mb") != "OOM":
@@ -356,7 +354,7 @@ def run_benchmark(gpu_type):
             ).to(device)
 
         result = run_oom_safe(
-            lambda: benchmark_cache_build(model, N, profile, device),
+            lambda: benchmark_cache_build(model, N, profile, device),  # noqa: F821
             "Cache",
         )
         if isinstance(result, tuple):
@@ -374,7 +372,7 @@ def run_benchmark(gpu_type):
         # --- Phase 3: Decode (runs even if training OOMed) ---
         if cache is not None and engine is not None:
             result = run_oom_safe(
-                lambda: benchmark_decode(engine, N, cache, profile, device),
+                lambda: benchmark_decode(engine, N, cache, profile, device),  # noqa: F821
                 "Decode",
             )
             if result and result.get("peak_mb") != "OOM":

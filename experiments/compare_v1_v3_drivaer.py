@@ -28,7 +28,7 @@ from timm.layers import trunc_normal_
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from transolver3.common import MLP, ACTIVATION
+from transolver3.common import MLP
 from transolver3.amortized_training import relative_l2_loss, AmortizedMeshSampler
 
 
@@ -424,7 +424,7 @@ def main():
     space_dim = 12  # 3 + 3 + 6
     out_dim = 4     # pressure(1) + wall_shear(3)
 
-    print(f"\nSynthetic DrivAerML-like dataset:")
+    print("\nSynthetic DrivAerML-like dataset:")
     print(f"  {args.n_train} train + {args.n_test} test samples")
     print(f"  {args.n_points:,} points/sample, subset={args.subset_size:,}")
     print(f"  Input dim: {space_dim}, Output dim: {out_dim}")
@@ -504,13 +504,15 @@ def main():
     print(f"\n{'Metric':<25} {'Transolver v1':>15} {'Transolver v3':>15} {'Ratio v3/v1':>12}")
     print(f"{'-'*67}")
     print(f"{'Parameters':.<25} {v1_params:>15,} {v3_params:>15,} {v3_params/v1_params:>11.2f}x")
-    print(f"{'Final test L2 (%)':.<25} {v1_final['test_l2']*100:>14.2f}% {v3_final['test_l2']*100:>14.2f}% {v3_final['test_l2']/v1_final['test_l2']:>11.2f}x")
+    v1_l2 = v1_final['test_l2']
+    v3_l2 = v3_final['test_l2']
+    print(f"{'Final test L2 (%)':.<25} {v1_l2*100:>14.2f}% {v3_l2*100:>14.2f}% {v3_l2/v1_l2:>11.2f}x")
     print(f"{'Avg epoch time (s)':.<25} {v1_avg_time:>15.2f} {v3_avg_time:>15.2f} {v3_avg_time/v1_avg_time:>11.2f}x")
     if v1_peak_mem > 0:
         print(f"{'Peak GPU mem (MB)':.<25} {v1_peak_mem:>15.0f} {v3_peak_mem:>15.0f} {v3_peak_mem/v1_peak_mem:>11.2f}x")
 
     # Convergence comparison
-    print(f"\nConvergence (test L2 %):")
+    print("\nConvergence (test L2 %):")
     v1_evals = [(h['epoch'], h['test_l2']) for h in history_v1 if h['test_l2'] is not None]
     v3_evals = [(h['epoch'], h['test_l2']) for h in history_v3 if h['test_l2'] is not None]
     print(f"  {'Epoch':>6}  {'v1 L2 %':>10}  {'v3 L2 %':>10}")

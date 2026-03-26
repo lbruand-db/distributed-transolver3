@@ -16,7 +16,6 @@ import argparse
 import time
 import json
 import torch
-import torch.nn as nn
 import numpy as np
 import pyvista as pv
 import matplotlib
@@ -361,14 +360,14 @@ def create_visualizations(coords_3d, gt_pressure, v1_pressure, v3_pressure,
     view_labels = ['Top View (x, y)', 'Side View (x, z)', 'Front View (y, z)']
 
     for row, (view, vlabel) in enumerate(zip(views, view_labels)):
-        sc0 = render_car_pressure(c, gt, f'Ground Truth — {vlabel}',
-                                   axes[row, 0], vmin, vmax, view=view)
-        sc1 = render_car_pressure(c, v1, f'v1 Prediction — {vlabel}',
-                                   axes[row, 1], vmin, vmax, view=view)
-        sc2 = render_car_pressure(c, v3, f'v3 Prediction — {vlabel}',
-                                   axes[row, 2], vmin, vmax, view=view)
+        sc = render_car_pressure(c, gt, f'Ground Truth — {vlabel}',
+                                 axes[row, 0], vmin, vmax, view=view)
+        render_car_pressure(c, v1, f'v1 Prediction — {vlabel}',
+                            axes[row, 1], vmin, vmax, view=view)
+        render_car_pressure(c, v3, f'v3 Prediction — {vlabel}',
+                            axes[row, 2], vmin, vmax, view=view)
 
-    cbar = fig.colorbar(sc0, ax=axes, orientation='vertical', fraction=0.015, pad=0.03)
+    cbar = fig.colorbar(sc, ax=axes, orientation='vertical', fraction=0.015, pad=0.03)
     cbar.set_label('Cp (pressure coefficient)', fontsize=12)
 
     plt.tight_layout(rect=[0, 0, 0.92, 0.96])
@@ -418,9 +417,9 @@ def create_visualizations(coords_3d, gt_pressure, v1_pressure, v3_pressure,
     fig.suptitle('DrivAerML — Absolute Pressure Error (Side View)',
                  fontsize=15, fontweight='bold', y=1.02)
 
-    sc1 = render_error(c, v1_err,
-                        f'v1 Error (mean={np.abs(v1_pressure - gt_pressure).mean():.4f})',
-                        axes[0], err_vmax, view='side', point_size=0.3)
+    render_error(c, v1_err,
+                 f'v1 Error (mean={np.abs(v1_pressure - gt_pressure).mean():.4f})',
+                 axes[0], err_vmax, view='side', point_size=0.3)
     sc2 = render_error(c, v3_err,
                         f'v3 Error (mean={np.abs(v3_pressure - gt_pressure).mean():.4f})',
                         axes[1], err_vmax, view='side', point_size=0.3)
@@ -550,7 +549,6 @@ def main():
     train_ds = RealDrivAerDataset(train_samples, stats=stats, subset_size=args.load_subsample)
     test_ds = RealDrivAerDataset([test_sample], stats=stats, subset_size=None)
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True)
-    test_loader = DataLoader(test_ds, batch_size=1, shuffle=False)
 
     # --- Build models ---
     torch.manual_seed(args.seed)
@@ -617,7 +615,7 @@ def main():
     v1_params = sum(p.numel() for p in model_v1.parameters())
     v3_params = sum(p.numel() for p in model_v3.parameters())
     print(f"\n{'='*60}")
-    print(f"  SUMMARY (Real DrivAerML)")
+    print("  SUMMARY (Real DrivAerML)")
     print(f"{'='*60}")
     print(f"  {'':.<25} {'v1':>12} {'v3':>12}")
     print(f"  {'Parameters':.<25} {v1_params:>12,} {v3_params:>12,}")
