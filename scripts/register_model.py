@@ -48,7 +48,8 @@ def main():
     print(f"Registering as {args.catalog}.{args.schema}.{args.model_name}...")
     with mlflow.start_run(run_name="register-model"):
         info = register_serving_model(
-            model, config,
+            model,
+            config,
             catalog=args.catalog,
             schema=args.schema,
             model_name=args.model_name,

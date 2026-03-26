@@ -34,6 +34,7 @@ def test_resolve_script_path_string():
 def test_resolve_script_path_module():
     """_resolve_script_path resolves a module with __file__."""
     import transolver3.distributed as mod
+
     result = _resolve_script_path(mod)
     assert result.endswith("distributed.py")
     assert os.path.isabs(result)
@@ -52,4 +53,5 @@ def test_preprocess_with_spark_import_guard():
     pyspark = pytest.importorskip("pyspark", reason="pyspark required")  # noqa: F841
     # If pyspark IS available, just verify the function is importable
     from transolver3.databricks_training import preprocess_with_spark
+
     assert callable(preprocess_with_spark)

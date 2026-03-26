@@ -39,8 +39,7 @@ class CachedInference:
         num_tiles: number of tiles for attention within each chunk (0=no tiling)
     """
 
-    def __init__(self, model, cache_chunk_size=100000, decode_chunk_size=50000,
-                 num_tiles=0):
+    def __init__(self, model, cache_chunk_size=100000, decode_chunk_size=50000, num_tiles=0):
         self.model = model
         self.cache_chunk_size = cache_chunk_size
         self.decode_chunk_size = decode_chunk_size
@@ -59,7 +58,9 @@ class CachedInference:
             output: (B, N, out_dim) predictions
         """
         return self.model.full_mesh_inference(
-            x, fx=fx, T=T,
+            x,
+            fx=fx,
+            T=T,
             num_tiles=self.num_tiles,
             cache_chunk_size=self.cache_chunk_size,
             decode_chunk_size=self.decode_chunk_size,
@@ -81,7 +82,9 @@ class CachedInference:
             cache: list of cached states, one per layer
         """
         return self.model.cache_physical_states(
-            x, fx=fx, T=T,
+            x,
+            fx=fx,
+            T=T,
             num_tiles=self.num_tiles,
             chunk_size=self.cache_chunk_size,
         )
@@ -101,9 +104,7 @@ class CachedInference:
         """
         N_q = x_query.shape[1]
         if self.decode_chunk_size is None or self.decode_chunk_size >= N_q:
-            return self.model.decode_from_cache(
-                x_query, cache, fx_query=fx_query, T=T
-            )
+            return self.model.decode_from_cache(x_query, cache, fx_query=fx_query, T=T)
 
         outputs = []
         for start in range(0, N_q, self.decode_chunk_size):
@@ -147,8 +148,7 @@ class DistributedCachedInference:
         num_tiles: tiles for attention within each chunk
     """
 
-    def __init__(self, model, cache_chunk_size=100000, decode_chunk_size=50000,
-                 num_tiles=0):
+    def __init__(self, model, cache_chunk_size=100000, decode_chunk_size=50000, num_tiles=0):
         self.model = model
         self.cache_chunk_size = cache_chunk_size
         self.decode_chunk_size = decode_chunk_size
@@ -179,7 +179,9 @@ class DistributedCachedInference:
         if not self._is_distributed():
             # Fall back to single-GPU
             return self.model.cache_physical_states(
-                x_local, fx=fx_local, T=T,
+                x_local,
+                fx=fx_local,
+                T=T,
                 num_tiles=self.num_tiles,
                 chunk_size=self.cache_chunk_size,
             )
@@ -258,9 +260,7 @@ class DistributedCachedInference:
         """
         N_q = x_query_local.shape[1]
         if self.decode_chunk_size is None or self.decode_chunk_size >= N_q:
-            return self.model.decode_from_cache(
-                x_query_local, cache, fx_query=fx_query_local, T=T
-            )
+            return self.model.decode_from_cache(x_query_local, cache, fx_query=fx_query_local, T=T)
 
         outputs = []
         for start in range(0, N_q, self.decode_chunk_size):
@@ -319,5 +319,5 @@ class DistributedCachedInference:
         # Trim padding and concatenate in rank order
         parts = []
         for i, n in enumerate(all_n):
-            parts.append(gathered[i][:, :n.item()])
+            parts.append(gathered[i][:, : n.item()])
         return torch.cat(parts, dim=1)

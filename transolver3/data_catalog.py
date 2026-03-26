@@ -20,10 +20,7 @@ def _require_pyspark():
     try:
         from pyspark.sql import SparkSession  # noqa: F401
     except ImportError:
-        raise ImportError(
-            "pyspark is required for data_catalog. "
-            "Install with: pip install transolver3[databricks]"
-        )
+        raise ImportError("pyspark is required for data_catalog. Install with: pip install transolver3[databricks]")
 
 
 def register_mesh_metadata(spark, catalog, schema, table, samples_dir):
@@ -59,18 +56,20 @@ def register_mesh_metadata(spark, catalog, schema, table, samples_dir):
         params_dim = int(data["params"].shape[0]) if "params" in keys else 0
         file_size_bytes = os.path.getsize(fpath)
 
-        rows.append(Row(
-            sample_id=sample_id,
-            file_name=fname,
-            file_path=fpath,
-            surface_cells=surface_cells,
-            volume_cells=volume_cells,
-            total_cells=surface_cells + volume_cells,
-            params_dim=params_dim,
-            available_keys=json.dumps(keys),
-            file_size_bytes=file_size_bytes,
-            registered_at=datetime.now(timezone.utc).isoformat(),
-        ))
+        rows.append(
+            Row(
+                sample_id=sample_id,
+                file_name=fname,
+                file_path=fpath,
+                surface_cells=surface_cells,
+                volume_cells=volume_cells,
+                total_cells=surface_cells + volume_cells,
+                params_dim=params_dim,
+                available_keys=json.dumps(keys),
+                file_size_bytes=file_size_bytes,
+                registered_at=datetime.now(timezone.utc).isoformat(),
+            )
+        )
 
     df = spark.createDataFrame(rows)
     full_table = f"{catalog}.{schema}.{table}"

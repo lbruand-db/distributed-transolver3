@@ -35,12 +35,10 @@ class TestMeshShardRange:
                 start, end = mesh_shard_range(N, rank, world_size)
                 shard_indices = set(range(start, end))
                 # No overlap with previous shards
-                assert all_indices.isdisjoint(shard_indices), \
-                    f"Overlap at world_size={world_size}, rank={rank}"
+                assert all_indices.isdisjoint(shard_indices), f"Overlap at world_size={world_size}, rank={rank}"
                 all_indices.update(shard_indices)
             # All points covered
-            assert len(all_indices) == N, \
-                f"Missing points at world_size={world_size}: {N - len(all_indices)}"
+            assert len(all_indices) == N, f"Missing points at world_size={world_size}: {N - len(all_indices)}"
 
     def test_single_worker(self):
         """Single worker gets everything."""
@@ -64,18 +62,18 @@ class TestMeshShardedDataset:
         N = 1000
         d_params = 6
         data = {
-            'params': np.random.randn(d_params).astype(np.float32),
-            'surface_coords': np.random.randn(N, 3).astype(np.float32),
-            'surface_normals': np.random.randn(N, 3).astype(np.float32),
-            'surface_pressure': np.random.randn(N, 1).astype(np.float32),
-            'surface_wall_shear': np.random.randn(N, 3).astype(np.float32),
+            "params": np.random.randn(d_params).astype(np.float32),
+            "surface_coords": np.random.randn(N, 3).astype(np.float32),
+            "surface_normals": np.random.randn(N, 3).astype(np.float32),
+            "surface_pressure": np.random.randn(N, 1).astype(np.float32),
+            "surface_wall_shear": np.random.randn(N, 3).astype(np.float32),
         }
-        sample_path = tmp_path / 'sample_000.npz'
+        sample_path = tmp_path / "sample_000.npz"
         np.savez(sample_path, **data)
 
         # Write split file
-        split_file = tmp_path / 'train.txt'
-        split_file.write_text('sample_000.npz\n')
+        split_file = tmp_path / "train.txt"
+        split_file.write_text("sample_000.npz\n")
 
         return tmp_path, data, N
 
@@ -83,26 +81,28 @@ class TestMeshShardedDataset:
         """Sharded datasets load disjoint subsets of the mesh."""
         import sys
         import os
-        sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..',
-                                         'Industrial-Scale-Benchmarks'))
+
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "Industrial-Scale-Benchmarks"))
         from dataset.drivaer_ml import DrivAerMLDataset
 
         data_dir, data, N = synthetic_data_dir
 
         # Load with 2 shards
-        ds0 = DrivAerMLDataset(str(data_dir), split='train', field='surface',
-                                subset_size=None, shard_id=0, num_shards=2)
-        ds1 = DrivAerMLDataset(str(data_dir), split='train', field='surface',
-                                subset_size=None, shard_id=1, num_shards=2)
+        ds0 = DrivAerMLDataset(
+            str(data_dir), split="train", field="surface", subset_size=None, shard_id=0, num_shards=2
+        )
+        ds1 = DrivAerMLDataset(
+            str(data_dir), split="train", field="surface", subset_size=None, shard_id=1, num_shards=2
+        )
 
         sample0 = ds0[0]
         sample1 = ds1[0]
 
-        n0 = sample0['surface_x'].shape[0]
-        n1 = sample1['surface_x'].shape[0]
+        n0 = sample0["surface_x"].shape[0]
+        n1 = sample1["surface_x"].shape[0]
 
         # Both shards together cover all points
-        assert n0 + n1 == N, f"Shards cover {n0}+{n1}={n0+n1}, expected {N}"
+        assert n0 + n1 == N, f"Shards cover {n0}+{n1}={n0 + n1}, expected {N}"
 
         # Each shard is roughly half
         assert abs(n0 - n1) <= 1, f"Shards unbalanced: {n0} vs {n1}"
@@ -111,35 +111,35 @@ class TestMeshShardedDataset:
         """Without sharding, all points are loaded."""
         import sys
         import os
-        sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..',
-                                         'Industrial-Scale-Benchmarks'))
+
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "Industrial-Scale-Benchmarks"))
         from dataset.drivaer_ml import DrivAerMLDataset
 
         data_dir, data, N = synthetic_data_dir
 
-        ds = DrivAerMLDataset(str(data_dir), split='train', field='surface',
-                               subset_size=None)
+        ds = DrivAerMLDataset(str(data_dir), split="train", field="surface", subset_size=None)
         sample = ds[0]
-        assert sample['surface_x'].shape[0] == N
+        assert sample["surface_x"].shape[0] == N
 
     def test_sharded_with_subsample(self, synthetic_data_dir):
         """Sharding + subsampling: subsample from the local shard only."""
         import sys
         import os
-        sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..',
-                                         'Industrial-Scale-Benchmarks'))
+
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "Industrial-Scale-Benchmarks"))
         from dataset.drivaer_ml import DrivAerMLDataset
 
         data_dir, data, N = synthetic_data_dir
 
         subset = 100
-        ds = DrivAerMLDataset(str(data_dir), split='train', field='surface',
-                               subset_size=subset, shard_id=0, num_shards=4)
+        ds = DrivAerMLDataset(
+            str(data_dir), split="train", field="surface", subset_size=subset, shard_id=0, num_shards=4
+        )
         sample = ds[0]
         # Should be min(shard_size, subset_size)
         shard_size = N // 4 + (1 if 0 < N % 4 else 0)
         expected = min(shard_size, subset)
-        assert sample['surface_x'].shape[0] == expected
+        assert sample["surface_x"].shape[0] == expected
 
 
 class TestDistributedCachedInference:
@@ -150,8 +150,14 @@ class TestDistributedCachedInference:
         """Create a small model and synthetic mesh."""
         B, N, space_dim, out_dim = 1, 200, 6, 2
         model = Transolver3(
-            space_dim=space_dim, n_layers=3, n_hidden=32, n_head=4,
-            fun_dim=0, out_dim=out_dim, slice_num=8, mlp_ratio=1,
+            space_dim=space_dim,
+            n_layers=3,
+            n_hidden=32,
+            n_head=4,
+            fun_dim=0,
+            out_dim=out_dim,
+            slice_num=8,
+            mlp_ratio=1,
         )
         model.eval()
         x = torch.randn(B, N, space_dim)
@@ -193,8 +199,8 @@ class TestDistributedCachedInference:
         cache_full = model.cache_physical_states(x, chunk_size=50)
 
         # Simulate 2 shards: split x into two halves
-        x0 = x[:, :N//2]
-        x1 = x[:, N//2:]
+        x0 = x[:, : N // 2]
+        x1 = x[:, N // 2 :]
 
         # Each "rank" preprocesses and accumulates locally
         fx0 = model._preprocess(x0)

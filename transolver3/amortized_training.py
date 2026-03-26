@@ -42,7 +42,7 @@ class AmortizedMeshSampler:
         """
         if total_points <= self.subset_size:
             return torch.arange(total_points)
-        return torch.randperm(total_points, generator=self.generator)[:self.subset_size]
+        return torch.randperm(total_points, generator=self.generator)[: self.subset_size]
 
 
 def relative_l2_loss(pred, target):
@@ -99,16 +99,27 @@ def create_scheduler(optimizer, total_steps, warmup_fraction=0.05, min_lr=1e-6):
             progress = (step - warmup_steps) / max(total_steps - warmup_steps, 1)
             cosine_decay = 0.5 * (1.0 + torch.cos(torch.tensor(progress * 3.14159265)))
             # Scale to ensure min_lr
-            base_lr = optimizer.defaults['lr']
+            base_lr = optimizer.defaults["lr"]
             target = min_lr / base_lr
             return target + (1.0 - target) * cosine_decay.item()
 
     return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
 
-def train_step(model, x, fx, target, optimizer, scheduler, sampler=None,
-               num_tiles=0, tile_size=0, grad_clip=1.0, normalizer=None,
-               scaler=None):
+def train_step(
+    model,
+    x,
+    fx,
+    target,
+    optimizer,
+    scheduler,
+    sampler=None,
+    num_tiles=0,
+    tile_size=0,
+    grad_clip=1.0,
+    normalizer=None,
+    scaler=None,
+):
     """Single training step with optional geometry amortized training.
 
     Paper (Appendix A.4): "Training was conducted in either float16 or
@@ -143,14 +154,13 @@ def train_step(model, x, fx, target, optimizer, scheduler, sampler=None,
     device_type = next(model.parameters()).device.type
     # Use autocast when a scaler is provided
     use_amp = scaler is not None
-    amp_dtype = torch.bfloat16 if device_type == 'cpu' else torch.float16
+    amp_dtype = torch.bfloat16 if device_type == "cpu" else torch.float16
 
     with torch.autocast(device_type=device_type, dtype=amp_dtype, enabled=use_amp):
         if sampler is not None:
             N = x.shape[1]
             indices = sampler.sample(N).to(x.device)
-            pred = model(x, fx=fx, num_tiles=num_tiles, tile_size=tile_size,
-                         subset_indices=indices)
+            pred = model(x, fx=fx, num_tiles=num_tiles, tile_size=tile_size, subset_indices=indices)
             t = target[:, indices]
         else:
             pred = model(x, fx=fx, num_tiles=num_tiles, tile_size=tile_size)

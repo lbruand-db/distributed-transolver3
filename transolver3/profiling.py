@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 @dataclass
 class MemoryResult:
     """Result of a memory profiling run."""
+
     peak_mb: float
     allocated_mb: float
     config: dict = field(default_factory=dict)
@@ -36,13 +37,13 @@ class MemoryResult:
     backend: str = "cpu"
 
     def __repr__(self):
-        return (f"MemoryResult(peak={self.peak_mb:.1f}MB, "
-                f"alloc={self.allocated_mb:.1f}MB, N={self.mesh_size})")
+        return f"MemoryResult(peak={self.peak_mb:.1f}MB, alloc={self.allocated_mb:.1f}MB, N={self.mesh_size})"
 
 
 @dataclass
 class LatencyResult:
     """Result of a latency profiling run."""
+
     mean_ms: float
     std_ms: float
     num_runs: int
@@ -50,8 +51,7 @@ class LatencyResult:
     mesh_size: int = 0
 
     def __repr__(self):
-        return (f"LatencyResult(mean={self.mean_ms:.1f}ms, "
-                f"std={self.std_ms:.1f}ms, N={self.mesh_size})")
+        return f"LatencyResult(mean={self.mean_ms:.1f}ms, std={self.std_ms:.1f}ms, N={self.mesh_size})"
 
 
 @contextmanager
@@ -72,6 +72,7 @@ def _track_memory_cuda(device):
 def _track_memory_cpu():
     """Context manager that tracks CPU memory via tracemalloc."""
     import tracemalloc
+
     tracemalloc.start()
     yield
     _, peak = tracemalloc.get_traced_memory()
@@ -79,9 +80,9 @@ def _track_memory_cpu():
     _track_memory_cpu._peak = peak
 
 
-def profile_memory(model, x, fx=None, T=None, num_tiles=0, tile_size=0,
-                   mode='forward', cache_chunk_size=None,
-                   decode_chunk_size=None):
+def profile_memory(
+    model, x, fx=None, T=None, num_tiles=0, tile_size=0, mode="forward", cache_chunk_size=None, decode_chunk_size=None
+):
     """Profile peak memory for a single model run.
 
     Args:
@@ -99,13 +100,13 @@ def profile_memory(model, x, fx=None, T=None, num_tiles=0, tile_size=0,
         MemoryResult with peak and allocated memory
     """
     device = next(model.parameters()).device
-    use_cuda = device.type == 'cuda'
+    use_cuda = device.type == "cuda"
     N = x.shape[1]
 
     config = {
-        'mode': mode,
-        'num_tiles': num_tiles,
-        'tile_size': tile_size,
+        "mode": mode,
+        "num_tiles": num_tiles,
+        "tile_size": tile_size,
     }
 
     if use_cuda:
@@ -116,10 +117,11 @@ def profile_memory(model, x, fx=None, T=None, num_tiles=0, tile_size=0,
         mem_before = torch.cuda.memory_allocated(device)
 
         with torch.no_grad():
-            if mode == 'forward':
+            if mode == "forward":
                 _ = model(x, fx=fx, T=T, num_tiles=num_tiles, tile_size=tile_size)
-            elif mode == 'cached':
+            elif mode == "cached":
                 from transolver3.inference import CachedInference
+
                 engine = CachedInference(
                     model,
                     cache_chunk_size=cache_chunk_size or N,
@@ -136,16 +138,18 @@ def profile_memory(model, x, fx=None, T=None, num_tiles=0, tile_size=0,
             allocated_mb=(peak - mem_before) / 1024 / 1024,
             config=config,
             mesh_size=N,
-            backend='cuda',
+            backend="cuda",
         )
     else:
         import tracemalloc
+
         # Run once to warm up (allocate parameters etc)
         with torch.no_grad():
-            if mode == 'forward':
+            if mode == "forward":
                 _ = model(x, fx=fx, T=T, num_tiles=num_tiles, tile_size=tile_size)
-            elif mode == 'cached':
+            elif mode == "cached":
                 from transolver3.inference import CachedInference
+
                 engine = CachedInference(
                     model,
                     cache_chunk_size=cache_chunk_size or N,
@@ -157,10 +161,11 @@ def profile_memory(model, x, fx=None, T=None, num_tiles=0, tile_size=0,
         # Now measure
         tracemalloc.start()
         with torch.no_grad():
-            if mode == 'forward':
+            if mode == "forward":
                 _ = model(x, fx=fx, T=T, num_tiles=num_tiles, tile_size=tile_size)
-            elif mode == 'cached':
+            elif mode == "cached":
                 from transolver3.inference import CachedInference
+
                 engine = CachedInference(
                     model,
                     cache_chunk_size=cache_chunk_size or N,
@@ -177,13 +182,23 @@ def profile_memory(model, x, fx=None, T=None, num_tiles=0, tile_size=0,
             allocated_mb=peak / 1024 / 1024,
             config=config,
             mesh_size=N,
-            backend='cpu_tracemalloc',
+            backend="cpu_tracemalloc",
         )
 
 
-def profile_latency(model, x, fx=None, T=None, num_tiles=0, tile_size=0,
-                    mode='forward', num_warmup=2, num_runs=5,
-                    cache_chunk_size=None, decode_chunk_size=None):
+def profile_latency(
+    model,
+    x,
+    fx=None,
+    T=None,
+    num_tiles=0,
+    tile_size=0,
+    mode="forward",
+    num_warmup=2,
+    num_runs=5,
+    cache_chunk_size=None,
+    decode_chunk_size=None,
+):
     """Profile latency (wall-clock time) for a model run.
 
     Args:
@@ -201,15 +216,16 @@ def profile_latency(model, x, fx=None, T=None, num_tiles=0, tile_size=0,
         LatencyResult with mean/std in milliseconds
     """
     device = next(model.parameters()).device
-    use_cuda = device.type == 'cuda'
+    use_cuda = device.type == "cuda"
     N = x.shape[1]
 
     def _run():
         with torch.no_grad():
-            if mode == 'forward':
+            if mode == "forward":
                 _ = model(x, fx=fx, T=T, num_tiles=num_tiles, tile_size=tile_size)
-            elif mode == 'cached':
+            elif mode == "cached":
                 from transolver3.inference import CachedInference
+
                 engine = CachedInference(
                     model,
                     cache_chunk_size=cache_chunk_size or N,
@@ -239,14 +255,22 @@ def profile_latency(model, x, fx=None, T=None, num_tiles=0, tile_size=0,
         mean_ms=times_t.mean().item(),
         std_ms=times_t.std().item() if len(times) > 1 else 0.0,
         num_runs=num_runs,
-        config={'mode': mode, 'num_tiles': num_tiles, 'tile_size': tile_size},
+        config={"mode": mode, "num_tiles": num_tiles, "tile_size": tile_size},
         mesh_size=N,
     )
 
 
-def benchmark_scaling(model, space_dim=3, mesh_sizes=None, configs=None,
-                      measure_memory=True, measure_latency=True,
-                      num_latency_runs=5, batch_size=1, device=None):
+def benchmark_scaling(
+    model,
+    space_dim=3,
+    mesh_sizes=None,
+    configs=None,
+    measure_memory=True,
+    measure_latency=True,
+    num_latency_runs=5,
+    batch_size=1,
+    device=None,
+):
     """Benchmark memory and latency across mesh sizes and configurations.
 
     Produces data similar to paper Figure 6 — memory vs mesh size for
@@ -277,8 +301,8 @@ def benchmark_scaling(model, space_dim=3, mesh_sizes=None, configs=None,
 
     if configs is None:
         configs = [
-            {'label': 'no_tiling', 'num_tiles': 0, 'tile_size': 0},
-            {'label': 'tile_1k', 'num_tiles': 0, 'tile_size': 1000},
+            {"label": "no_tiling", "num_tiles": 0, "tile_size": 0},
+            {"label": "tile_1k", "num_tiles": 0, "tile_size": 1000},
         ]
 
     if device is None:
@@ -290,57 +314,75 @@ def benchmark_scaling(model, space_dim=3, mesh_sizes=None, configs=None,
     latency_results = []
 
     for config in configs:
-        label = config.get('label', str(config))
+        label = config.get("label", str(config))
         mem_row = []
         lat_row = []
 
         for N in mesh_sizes:
             x = torch.randn(batch_size, N, space_dim, device=device)
-            nt = config.get('num_tiles', 0)
-            ts = config.get('tile_size', 0)
-            mode = config.get('mode', 'forward')
-            ccs = config.get('cache_chunk_size', None)
-            dcs = config.get('decode_chunk_size', None)
+            nt = config.get("num_tiles", 0)
+            ts = config.get("tile_size", 0)
+            mode = config.get("mode", "forward")
+            ccs = config.get("cache_chunk_size", None)
+            dcs = config.get("decode_chunk_size", None)
 
             if measure_memory:
                 try:
                     mr = profile_memory(
-                        model, x, num_tiles=nt, tile_size=ts, mode=mode,
-                        cache_chunk_size=ccs, decode_chunk_size=dcs,
+                        model,
+                        x,
+                        num_tiles=nt,
+                        tile_size=ts,
+                        mode=mode,
+                        cache_chunk_size=ccs,
+                        decode_chunk_size=dcs,
                     )
-                    mr.config['label'] = label
+                    mr.config["label"] = label
                     mem_row.append(mr)
                 except (RuntimeError, torch.cuda.OutOfMemoryError):
-                    mem_row.append(MemoryResult(
-                        peak_mb=float('inf'), allocated_mb=float('inf'),
-                        config={'label': label, 'error': 'OOM'},
-                        mesh_size=N, backend='oom',
-                    ))
+                    mem_row.append(
+                        MemoryResult(
+                            peak_mb=float("inf"),
+                            allocated_mb=float("inf"),
+                            config={"label": label, "error": "OOM"},
+                            mesh_size=N,
+                            backend="oom",
+                        )
+                    )
 
             if measure_latency:
                 try:
                     lr = profile_latency(
-                        model, x, num_tiles=nt, tile_size=ts, mode=mode,
+                        model,
+                        x,
+                        num_tiles=nt,
+                        tile_size=ts,
+                        mode=mode,
                         num_runs=num_latency_runs,
-                        cache_chunk_size=ccs, decode_chunk_size=dcs,
+                        cache_chunk_size=ccs,
+                        decode_chunk_size=dcs,
                     )
-                    lr.config['label'] = label
+                    lr.config["label"] = label
                     lat_row.append(lr)
                 except (RuntimeError, torch.cuda.OutOfMemoryError):
-                    lat_row.append(LatencyResult(
-                        mean_ms=float('inf'), std_ms=0.0, num_runs=0,
-                        config={'label': label, 'error': 'OOM'},
-                        mesh_size=N,
-                    ))
+                    lat_row.append(
+                        LatencyResult(
+                            mean_ms=float("inf"),
+                            std_ms=0.0,
+                            num_runs=0,
+                            config={"label": label, "error": "OOM"},
+                            mesh_size=N,
+                        )
+                    )
 
         memory_results.append(mem_row)
         latency_results.append(lat_row)
 
     return {
-        'mesh_sizes': mesh_sizes,
-        'configs': configs,
-        'memory': memory_results,
-        'latency': latency_results,
+        "mesh_sizes": mesh_sizes,
+        "configs": configs,
+        "memory": memory_results,
+        "latency": latency_results,
     }
 
 
@@ -354,35 +396,35 @@ def format_benchmark_table(results):
         str: formatted table
     """
     lines = []
-    mesh_sizes = results['mesh_sizes']
-    configs = results['configs']
+    mesh_sizes = results["mesh_sizes"]
+    configs = results["configs"]
 
-    if results.get('memory') and results['memory'][0]:
+    if results.get("memory") and results["memory"][0]:
         lines.append("=== Memory (Peak MB) ===")
-        header = f"{'Config':<20}" + "".join(f"{'N='+str(n):>12}" for n in mesh_sizes)
+        header = f"{'Config':<20}" + "".join(f"{'N=' + str(n):>12}" for n in mesh_sizes)
         lines.append(header)
         lines.append("-" * len(header))
         for i, config in enumerate(configs):
-            label = config.get('label', f'config_{i}')
+            label = config.get("label", f"config_{i}")
             row = f"{label:<20}"
-            for mr in results['memory'][i]:
-                if mr.peak_mb == float('inf'):
+            for mr in results["memory"][i]:
+                if mr.peak_mb == float("inf"):
                     row += f"{'OOM':>12}"
                 else:
                     row += f"{mr.peak_mb:>11.1f}M"
             lines.append(row)
 
-    if results.get('latency') and results['latency'][0]:
+    if results.get("latency") and results["latency"][0]:
         lines.append("")
         lines.append("=== Latency (ms) ===")
-        header = f"{'Config':<20}" + "".join(f"{'N='+str(n):>12}" for n in mesh_sizes)
+        header = f"{'Config':<20}" + "".join(f"{'N=' + str(n):>12}" for n in mesh_sizes)
         lines.append(header)
         lines.append("-" * len(header))
         for i, config in enumerate(configs):
-            label = config.get('label', f'config_{i}')
+            label = config.get("label", f"config_{i}")
             row = f"{label:<20}"
-            for lr in results['latency'][i]:
-                if lr.mean_ms == float('inf'):
+            for lr in results["latency"][i]:
+                if lr.mean_ms == float("inf"):
                     row += f"{'OOM':>12}"
                 else:
                     row += f"{lr.mean_ms:>10.1f}ms"

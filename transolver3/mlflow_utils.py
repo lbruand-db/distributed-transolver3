@@ -21,10 +21,7 @@ def _require_mlflow():
     try:
         import mlflow  # noqa: F401
     except ImportError:
-        raise ImportError(
-            "mlflow is required for mlflow_utils. "
-            "Install with: pip install transolver3[databricks]"
-        )
+        raise ImportError("mlflow is required for mlflow_utils. Install with: pip install transolver3[databricks]")
 
 
 def log_training_run(model, config, normalizers=None):
@@ -60,9 +57,7 @@ def log_training_run(model, config, normalizers=None):
     # Log normalizer artifacts
     if normalizers:
         for name, norm in normalizers.items():
-            log_normalization_artifacts(
-                **{("input_norm" if "input" in name.lower() else "target_norm"): norm}
-            )
+            log_normalization_artifacts(**{("input_norm" if "input" in name.lower() else "target_norm"): norm})
 
 
 def log_model_with_signature(model, sample_input, registered_model_name=None):
@@ -137,9 +132,7 @@ def load_normalization_artifacts(run_id):
     import mlflow
     from transolver3.normalizer import InputNormalizer, TargetNormalizer
 
-    artifact_dir = mlflow.artifacts.download_artifacts(
-        run_id=run_id, artifact_path="normalizers"
-    )
+    artifact_dir = mlflow.artifacts.download_artifacts(run_id=run_id, artifact_path="normalizers")
 
     input_norm = None
     target_norm = None
@@ -172,6 +165,7 @@ def log_prediction_visualization(pred, target, coords, step, title=None):
 
     try:
         import matplotlib
+
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
     except ImportError:

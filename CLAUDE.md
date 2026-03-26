@@ -18,6 +18,8 @@ uv sync                    # Install dependencies
 uv run pytest              # Run all tests
 uv run pytest -x           # Stop on first failure
 uv run pytest -k "test_cached"  # Run specific tests
+uv run ruff check .        # Lint
+uv run ruff format .       # Format (run before committing)
 
 # Databricks Asset Bundle
 databricks bundle deploy -t a10g
@@ -73,3 +75,4 @@ Uses `torch.distributed` DDP with mesh sharding: each GPU loads 1/K of the mesh 
 - All attention uses `torch.nn.functional.scaled_dot_product_attention`
 - Mixed precision via `torch.amp`, not manual casting
 - Tests verify numerical equivalence between tiled/untiled and cached/direct paths (tolerance ~1e-7)
+- **Formatter/Linter**: ruff — run `uv run ruff format .` and `uv run ruff check .` before committing

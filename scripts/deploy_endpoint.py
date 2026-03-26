@@ -22,8 +22,7 @@ def main():
     parser.add_argument("--endpoint_name", default="transolver3-serving")
     args = parser.parse_args()
 
-    print(f"Deploying {args.catalog}.{args.schema}.{args.model_name} "
-          f"to endpoint '{args.endpoint_name}'...")
+    print(f"Deploying {args.catalog}.{args.schema}.{args.model_name} to endpoint '{args.endpoint_name}'...")
     result = deploy_serving_endpoint(
         model_name=args.model_name,
         endpoint_name=args.endpoint_name,

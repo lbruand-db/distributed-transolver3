@@ -33,8 +33,7 @@ def setup_inference_table(endpoint_name, catalog, schema):
         from databricks.sdk import WorkspaceClient
     except ImportError:
         raise ImportError(
-            "databricks-sdk is required for setup_inference_table. "
-            "Install with: pip install transolver3[databricks]"
+            "databricks-sdk is required for setup_inference_table. Install with: pip install transolver3[databricks]"
         )
 
     client = WorkspaceClient()
@@ -49,8 +48,7 @@ def setup_inference_table(endpoint_name, catalog, schema):
             "enabled": True,
         },
     )
-    print(f"Inference table enabled for endpoint '{endpoint_name}' "
-          f"in {catalog}.{schema}")
+    print(f"Inference table enabled for endpoint '{endpoint_name}' in {catalog}.{schema}")
     return result
 
 
@@ -72,8 +70,7 @@ def create_quality_monitor(catalog, schema, table_name):
         from databricks.sdk import WorkspaceClient
     except ImportError:
         raise ImportError(
-            "databricks-sdk is required for create_quality_monitor. "
-            "Install with: pip install transolver3[databricks]"
+            "databricks-sdk is required for create_quality_monitor. Install with: pip install transolver3[databricks]"
         )
 
     client = WorkspaceClient()
@@ -165,8 +162,7 @@ def log_drift_metrics(spark, catalog, schema, predictions, baseline_stats):
         from pyspark.sql import Row
     except ImportError:
         raise ImportError(
-            "pyspark is required for log_drift_metrics. "
-            "Install with: pip install transolver3[databricks]"
+            "pyspark is required for log_drift_metrics. Install with: pip install transolver3[databricks]"
         )
 
     if predictions.ndim == 2:
@@ -201,16 +197,18 @@ def log_drift_metrics(spark, catalog, schema, predictions, baseline_stats):
             "baseline_std": baseline_std,
         }
 
-        rows.append(Row(
-            channel=ch,
-            psi=psi,
-            drift_flag=drift_flag,
-            current_mean=current_mean,
-            current_std=current_std,
-            baseline_mean=baseline_mean,
-            baseline_std=baseline_std,
-            logged_at=timestamp,
-        ))
+        rows.append(
+            Row(
+                channel=ch,
+                psi=psi,
+                drift_flag=drift_flag,
+                current_mean=current_mean,
+                current_std=current_std,
+                baseline_mean=baseline_mean,
+                baseline_std=baseline_std,
+                logged_at=timestamp,
+            )
+        )
 
     # Write to Delta
     full_table = f"{catalog}.{schema}.drift_metrics"

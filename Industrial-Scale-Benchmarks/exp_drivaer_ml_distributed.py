@@ -23,16 +23,21 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from transolver3.model import Transolver3
 from transolver3.amortized_training import (
-    AmortizedMeshSampler, relative_l2_loss,
-    create_optimizer, create_scheduler,
+    AmortizedMeshSampler,
+    relative_l2_loss,
+    create_optimizer,
+    create_scheduler,
 )
 from transolver3.inference import CachedInference, DistributedCachedInference
 from transolver3.distributed import (
-    setup_distributed, cleanup, is_main_process, get_device,
+    setup_distributed,
+    cleanup,
+    is_main_process,
+    get_device,
 )
 from dataset.drivaer_ml import DrivAerMLDataset
 
@@ -40,50 +45,68 @@ from dataset.drivaer_ml import DrivAerMLDataset
 try:
     import mlflow
     from transolver3.mlflow_utils import log_training_run, log_model_with_signature
+
     _HAS_MLFLOW = True
 except ImportError:
     _HAS_MLFLOW = False
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description='Distributed Transolver-3 on DrivAerML')
-    parser.add_argument('--data_dir', required=True)
-    parser.add_argument('--save_dir', default='./checkpoints/drivaer_ml_distributed')
-    parser.add_argument('--field', default='surface', choices=['surface', 'volume', 'both'])
-    parser.add_argument('--epochs', type=int, default=500)
-    parser.add_argument('--lr', type=float, default=1e-3)
-    parser.add_argument('--weight_decay', type=float, default=0.05)
-    parser.add_argument('--batch_size', type=int, default=1)
-    parser.add_argument('--subset_size', type=int, default=400000,
-                        help='Total subset size across all GPUs. Each GPU gets subset_size/world_size.')
-    parser.add_argument('--n_layers', type=int, default=24)
-    parser.add_argument('--n_hidden', type=int, default=256)
-    parser.add_argument('--n_head', type=int, default=8)
-    parser.add_argument('--slice_num', type=int, default=64)
-    parser.add_argument('--num_tiles', type=int, default=8)
-    parser.add_argument('--grad_clip', type=float, default=1.0)
-    parser.add_argument('--cache_chunk_size', type=int, default=100000)
-    parser.add_argument('--decode_chunk_size', type=int, default=50000)
-    parser.add_argument('--eval_only', action='store_true')
-    parser.add_argument('--checkpoint', type=str, default=None)
-    parser.add_argument('--seed', type=int, default=42)
-    parser.add_argument('--no-shard-mesh', action='store_true', dest='no_shard_mesh',
-                        help='Disable mesh sharding. Each GPU loads the full mesh '
-                             '(classic DDP). Use for smaller meshes that fit in RAM.')
-    parser.add_argument('--shard-eval', action='store_true', dest='shard_eval',
-                        help='Use distributed sharded inference for evaluation. '
-                             'Each GPU processes its mesh shard; cache accumulators '
-                             'are all-reduced (~514 KB/layer). Required for meshes '
-                             'that do not fit in single-node memory.')
-    parser.add_argument('--use-distributor', action='store_true', dest='use_distributor',
-                        help='Launch via TorchDistributor on Databricks instead of torchrun.')
-    parser.add_argument('--num-gpus', type=int, default=8, dest='num_gpus',
-                        help='Number of GPUs (only used with --use-distributor)')
+    parser = argparse.ArgumentParser(description="Distributed Transolver-3 on DrivAerML")
+    parser.add_argument("--data_dir", required=True)
+    parser.add_argument("--save_dir", default="./checkpoints/drivaer_ml_distributed")
+    parser.add_argument("--field", default="surface", choices=["surface", "volume", "both"])
+    parser.add_argument("--epochs", type=int, default=500)
+    parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--weight_decay", type=float, default=0.05)
+    parser.add_argument("--batch_size", type=int, default=1)
+    parser.add_argument(
+        "--subset_size",
+        type=int,
+        default=400000,
+        help="Total subset size across all GPUs. Each GPU gets subset_size/world_size.",
+    )
+    parser.add_argument("--n_layers", type=int, default=24)
+    parser.add_argument("--n_hidden", type=int, default=256)
+    parser.add_argument("--n_head", type=int, default=8)
+    parser.add_argument("--slice_num", type=int, default=64)
+    parser.add_argument("--num_tiles", type=int, default=8)
+    parser.add_argument("--grad_clip", type=float, default=1.0)
+    parser.add_argument("--cache_chunk_size", type=int, default=100000)
+    parser.add_argument("--decode_chunk_size", type=int, default=50000)
+    parser.add_argument("--eval_only", action="store_true")
+    parser.add_argument("--checkpoint", type=str, default=None)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--no-shard-mesh",
+        action="store_true",
+        dest="no_shard_mesh",
+        help="Disable mesh sharding. Each GPU loads the full mesh "
+        "(classic DDP). Use for smaller meshes that fit in RAM.",
+    )
+    parser.add_argument(
+        "--shard-eval",
+        action="store_true",
+        dest="shard_eval",
+        help="Use distributed sharded inference for evaluation. "
+        "Each GPU processes its mesh shard; cache accumulators "
+        "are all-reduced (~514 KB/layer). Required for meshes "
+        "that do not fit in single-node memory.",
+    )
+    parser.add_argument(
+        "--use-distributor",
+        action="store_true",
+        dest="use_distributor",
+        help="Launch via TorchDistributor on Databricks instead of torchrun.",
+    )
+    parser.add_argument(
+        "--num-gpus", type=int, default=8, dest="num_gpus", help="Number of GPUs (only used with --use-distributor)"
+    )
     return parser.parse_args()
 
 
 def get_field_key(field):
-    return f'{field}_x', f'{field}_target'
+    return f"{field}_x", f"{field}_target"
 
 
 def log(msg):
@@ -137,7 +160,7 @@ def evaluate(model, dataloader, args, device, sharded=False):
                  processes its mesh shard and all-reduces the tiny cache
                  accumulators. If False, rank 0 evaluates on full data.
     """
-    raw_model = model.module if hasattr(model, 'module') else model
+    raw_model = model.module if hasattr(model, "module") else model
     raw_model.eval()
     all_errors = []
     x_key, t_key = get_field_key(args.field)
@@ -177,7 +200,7 @@ def evaluate(model, dataloader, args, device, sharded=False):
     if all_errors:
         mean_error = torch.cat(all_errors).mean().item()
     else:
-        mean_error = float('inf')
+        mean_error = float("inf")
 
     if sharded and dist.is_initialized():
         # Average the error across ranks for consistent reporting
@@ -211,14 +234,18 @@ def main():
 
     # --- Datasets ---
     train_dataset = DrivAerMLDataset(
-        args.data_dir, split='train', field=args.field,
+        args.data_dir,
+        split="train",
+        field=args.field,
         subset_size=local_subset_size,
         shard_id=rank if shard_mesh else None,
         num_shards=world_size if shard_mesh else None,
     )
     # Test dataset: sharded if --shard-eval, otherwise full mesh on rank 0
     test_dataset = DrivAerMLDataset(
-        args.data_dir, split='test', field=args.field,
+        args.data_dir,
+        split="test",
+        field=args.field,
         subset_size=None,
         shard_id=rank if args.shard_eval else None,
         num_shards=world_size if args.shard_eval else None,
@@ -227,10 +254,15 @@ def main():
     # DistributedSampler ensures each rank sees different samples when
     # there are multiple samples in the dataset
     train_sampler = DistributedSampler(
-        train_dataset, num_replicas=world_size, rank=rank, shuffle=True,
+        train_dataset,
+        num_replicas=world_size,
+        rank=rank,
+        shuffle=True,
     )
     train_loader = DataLoader(
-        train_dataset, batch_size=args.batch_size, sampler=train_sampler,
+        train_dataset,
+        batch_size=args.batch_size,
+        sampler=train_sampler,
     )
     test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False)
 
@@ -254,7 +286,7 @@ def main():
     ).to(device)
 
     # Wrap in DDP — gradient all-reduce is automatic on backward()
-    model = DDP(model, device_ids=[device] if device.type == 'cuda' else None)
+    model = DDP(model, device_ids=[device] if device.type == "cuda" else None)
 
     n_params = sum(p.numel() for p in model.parameters())
     log(f"Model parameters: {n_params:,}")
@@ -269,10 +301,10 @@ def main():
         if args.shard_eval:
             # All ranks participate in sharded eval
             error = evaluate(model, test_loader, args, device, sharded=True)
-            log(f"Test relative L2 error: {error:.4f} ({error*100:.2f}%)")
+            log(f"Test relative L2 error: {error:.4f} ({error * 100:.2f}%)")
         elif is_main_process():
             error = evaluate(model, test_loader, args, device, sharded=False)
-            log(f"Test relative L2 error: {error:.4f} ({error*100:.2f}%)")
+            log(f"Test relative L2 error: {error:.4f} ({error * 100:.2f}%)")
         cleanup()
         return
 
@@ -293,27 +325,29 @@ def main():
     mlflow_run = None
     if _HAS_MLFLOW and is_main_process():
         mlflow_run = mlflow.start_run(run_name=f"drivaer-{args.field}-{args.n_layers}L")
-        log_training_run(model, {
-            "field": args.field,
-            "epochs": args.epochs,
-            "lr": scaled_lr,
-            "weight_decay": args.weight_decay,
-            "subset_size": args.subset_size,
-            "n_layers": args.n_layers,
-            "n_hidden": args.n_hidden,
-            "n_head": args.n_head,
-            "slice_num": args.slice_num,
-            "num_tiles": args.num_tiles,
-            "world_size": world_size,
-            "shard_mesh": shard_mesh,
-        })
+        log_training_run(
+            model,
+            {
+                "field": args.field,
+                "epochs": args.epochs,
+                "lr": scaled_lr,
+                "weight_decay": args.weight_decay,
+                "subset_size": args.subset_size,
+                "n_layers": args.n_layers,
+                "n_hidden": args.n_hidden,
+                "n_head": args.n_head,
+                "slice_num": args.slice_num,
+                "num_tiles": args.num_tiles,
+                "world_size": world_size,
+                "shard_mesh": shard_mesh,
+            },
+        )
 
-    best_error = float('inf')
+    best_error = float("inf")
     for epoch in range(args.epochs):
         train_sampler.set_epoch(epoch)  # shuffle differently each epoch
         t0 = time.time()
-        train_loss = train_epoch(model, train_loader, optimizer, scheduler,
-                                  mesh_sampler, args, device)
+        train_loss = train_epoch(model, train_loader, optimizer, scheduler, mesh_sampler, args, device)
         t1 = time.time()
 
         # Evaluate
@@ -321,37 +355,38 @@ def main():
             if args.shard_eval:
                 # All ranks participate in sharded eval
                 test_error = evaluate(model, test_loader, args, device, sharded=True)
-                log(f"Epoch {epoch+1}/{args.epochs} | "
+                log(
+                    f"Epoch {epoch + 1}/{args.epochs} | "
                     f"train_loss={train_loss:.6f} | "
-                    f"test_L2={test_error:.4f} ({test_error*100:.2f}%) | "
-                    f"time={t1-t0:.1f}s")
+                    f"test_L2={test_error:.4f} ({test_error * 100:.2f}%) | "
+                    f"time={t1 - t0:.1f}s"
+                )
                 if is_main_process() and test_error < best_error:
                     best_error = test_error
-                    torch.save(model.module.state_dict(),
-                               os.path.join(args.save_dir, 'best_model.pt'))
+                    torch.save(model.module.state_dict(), os.path.join(args.save_dir, "best_model.pt"))
             else:
                 if is_main_process():
                     test_error = evaluate(model, test_loader, args, device, sharded=False)
-                    log(f"Epoch {epoch+1}/{args.epochs} | "
+                    log(
+                        f"Epoch {epoch + 1}/{args.epochs} | "
                         f"train_loss={train_loss:.6f} | "
-                        f"test_L2={test_error:.4f} ({test_error*100:.2f}%) | "
-                        f"time={t1-t0:.1f}s")
+                        f"test_L2={test_error:.4f} ({test_error * 100:.2f}%) | "
+                        f"time={t1 - t0:.1f}s"
+                    )
                     if test_error < best_error:
                         best_error = test_error
-                        torch.save(model.module.state_dict(),
-                                   os.path.join(args.save_dir, 'best_model.pt'))
+                        torch.save(model.module.state_dict(), os.path.join(args.save_dir, "best_model.pt"))
                 if dist.is_initialized():
                     dist.barrier()
         else:
-            log(f"Epoch {epoch+1}/{args.epochs} | "
-                f"train_loss={train_loss:.6f} | time={t1-t0:.1f}s")
+            log(f"Epoch {epoch + 1}/{args.epochs} | train_loss={train_loss:.6f} | time={t1 - t0:.1f}s")
 
         # Log metrics to MLflow
         if mlflow_run and is_main_process():
             mlflow.log_metric("train_loss", train_loss, step=epoch)
             mlflow.log_metric("epoch_time_s", t1 - t0, step=epoch)
 
-    log(f"\nBest test relative L2 error: {best_error:.4f} ({best_error*100:.2f}%)")
+    log(f"\nBest test relative L2 error: {best_error:.4f} ({best_error * 100:.2f}%)")
 
     # Log best model to MLflow
     if mlflow_run and is_main_process():
@@ -367,13 +402,15 @@ def main():
     cleanup()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     # Support --use-distributor for TorchDistributor launch on Databricks
     import sys as _sys
-    if '--use-distributor' in _sys.argv:
+
+    if "--use-distributor" in _sys.argv:
         from transolver3.databricks_training import launch_distributed_training
+
         # Parse just num_gpus before handing off
-        _idx = _sys.argv.index('--num-gpus') if '--num-gpus' in _sys.argv else None
+        _idx = _sys.argv.index("--num-gpus") if "--num-gpus" in _sys.argv else None
         _num_gpus = int(_sys.argv[_idx + 1]) if _idx else 8
         launch_distributed_training(main, _num_gpus)
     else:

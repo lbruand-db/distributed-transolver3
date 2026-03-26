@@ -54,7 +54,9 @@ def launch_distributed_training(train_fn, num_gpus, **kwargs):
         # train_fn must be importable as a script with if __name__ == '__main__'
         script = _resolve_script_path(train_fn)
         cmd = [
-            sys.executable, "-m", "torch.distributed.run",
+            sys.executable,
+            "-m",
+            "torch.distributed.run",
             f"--nproc_per_node={num_gpus}",
             script,
         ]
@@ -82,6 +84,7 @@ def _resolve_script_path(train_fn):
     module = getattr(train_fn, "__module__", None)
     if module and module != "__main__":
         import importlib
+
         mod = importlib.import_module(module)
         if hasattr(mod, "__file__") and mod.__file__:
             return os.path.abspath(mod.__file__)
@@ -117,17 +120,12 @@ def preprocess_with_spark(spark, data_dir, catalog, schema, table):
         from pyspark.sql.types import StructType, StructField, StringType
     except ImportError:
         raise ImportError(
-            "pyspark is required for preprocess_with_spark. "
-            "Install with: pip install transolver3[databricks]"
+            "pyspark is required for preprocess_with_spark. Install with: pip install transolver3[databricks]"
         )
     import numpy as np
 
     # Collect file paths
-    files = [
-        os.path.join(data_dir, f)
-        for f in sorted(os.listdir(data_dir))
-        if f.endswith(".npz")
-    ]
+    files = [os.path.join(data_dir, f) for f in sorted(os.listdir(data_dir)) if f.endswith(".npz")]
 
     # Create a DataFrame of file paths to distribute work
     file_schema = StructType([StructField("file_path", StringType(), False)])

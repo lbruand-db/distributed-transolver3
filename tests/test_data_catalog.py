@@ -29,8 +29,7 @@ from transolver3.normalizer import InputNormalizer, TargetNormalizer  # noqa: E4
 def spark():
     """Create a local SparkSession for testing (reused across tests)."""
     session = (
-        SparkSession.builder
-        .master("local[1]")
+        SparkSession.builder.master("local[1]")
         .appName("transolver3-test")
         .config("spark.sql.warehouse.dir", tempfile.mkdtemp())
         .config("spark.driver.extraJavaOptions", "-Dderby.system.home=" + tempfile.mkdtemp())

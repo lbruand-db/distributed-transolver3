@@ -98,7 +98,7 @@ class PhysicsAttentionV3(nn.Module):
     Since inner_dim == dim in the standard config, no final N-domain linear is needed.
     """
 
-    def __init__(self, dim, heads=8, dim_head=64, dropout=0., slice_num=64):
+    def __init__(self, dim, heads=8, dim_head=64, dropout=0.0, slice_num=64):
         super().__init__()
         inner_dim = dim_head * heads
         assert inner_dim == dim, (
@@ -197,7 +197,7 @@ class PhysicsAttentionV3(nn.Module):
 
         # FIX #1: use matmul for deslice, then rearrange (concat heads) not mean
         x_out = _deslice(s_out, w)  # B, H, N, dim_head
-        x_out = rearrange(x_out, 'b h n d -> b n (h d)')  # B, N, dim
+        x_out = rearrange(x_out, "b h n d -> b n (h d)")  # B, N, dim
         return self.out_dropout(x_out)
 
     def _forward_tiled(self, x, num_tiles):
@@ -223,9 +223,7 @@ class PhysicsAttentionV3(nn.Module):
                 return s_raw_tile, d_tile
 
             if self.training:
-                s_raw_t, d_t = checkpoint(
-                    _tile_slice_and_aggregate, x_t, use_reentrant=False
-                )
+                s_raw_t, d_t = checkpoint(_tile_slice_and_aggregate, x_t, use_reentrant=False)
             else:
                 s_raw_t, d_t = _tile_slice_and_aggregate(x_t)
 
@@ -235,9 +233,7 @@ class PhysicsAttentionV3(nn.Module):
         # Phase 2: Slice-domain operations (on M tokens only)
         s = self.slice_linear1(s_raw_accum / (d_accum[..., None] + 1e-5))
         q, k, v = self.to_q(s), self.to_k(s), self.to_v(s)
-        s_out = F.scaled_dot_product_attention(
-            q, k, v, dropout_p=self.dropout_p if self.training else 0.0
-        )
+        s_out = F.scaled_dot_product_attention(q, k, v, dropout_p=self.dropout_p if self.training else 0.0)
         s_out = self.slice_linear3(s_out)  # B, H, M, dim_head
 
         # Phase 3: Deslice per tile
@@ -251,12 +247,10 @@ class PhysicsAttentionV3(nn.Module):
                 w_tile = self._compute_slice_weights(x_tile)
                 # FIX #1 + #2: matmul deslice + rearrange
                 x_out_tile = _deslice(s_out_fixed, w_tile)  # B, H, N_t, dim_head
-                return rearrange(x_out_tile, 'b h n d -> b n (h d)')
+                return rearrange(x_out_tile, "b h n d -> b n (h d)")
 
             if self.training:
-                x_out_t = checkpoint(
-                    _tile_deslice, x_t, s_out, use_reentrant=False
-                )
+                x_out_t = checkpoint(_tile_deslice, x_t, s_out, use_reentrant=False)
             else:
                 x_out_t = _tile_deslice(x_t, s_out)
 
@@ -334,5 +328,5 @@ class PhysicsAttentionV3(nn.Module):
         w = self._compute_slice_weights(x_query)  # B, H, N_q, M
         # FIX #1 + #2: matmul deslice + rearrange
         x_out = _deslice(cached_s_out, w)  # B, H, N_q, dim_head
-        x_out = rearrange(x_out, 'b h n d -> b n (h d)')  # B, N_q, dim
+        x_out = rearrange(x_out, "b h n d -> b n (h d)")  # B, N_q, dim
         return x_out

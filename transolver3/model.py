@@ -25,26 +25,27 @@ from transolver3.transolver3_block import Transolver3Block
 
 
 class Transolver3(nn.Module):
-    def __init__(self,
-                 space_dim=1,
-                 n_layers=5,
-                 n_hidden=256,
-                 dropout=0.0,
-                 n_head=8,
-                 Time_Input=False,
-                 act='gelu',
-                 mlp_ratio=1,
-                 fun_dim=1,
-                 out_dim=1,
-                 slice_num=32,
-                 ref=8,
-                 unified_pos=False,
-                 num_tiles=0,
-                 tile_size=0,
-                 mlp_chunk_size=0,
-                 ):
+    def __init__(
+        self,
+        space_dim=1,
+        n_layers=5,
+        n_hidden=256,
+        dropout=0.0,
+        n_head=8,
+        Time_Input=False,
+        act="gelu",
+        mlp_ratio=1,
+        fun_dim=1,
+        out_dim=1,
+        slice_num=32,
+        ref=8,
+        unified_pos=False,
+        num_tiles=0,
+        tile_size=0,
+        mlp_chunk_size=0,
+    ):
         super(Transolver3, self).__init__()
-        self.__name__ = 'Transolver3'
+        self.__name__ = "Transolver3"
         self.ref = ref
         self.unified_pos = unified_pos
         self.Time_Input = Time_Input
@@ -54,37 +55,36 @@ class Transolver3(nn.Module):
         self.tile_size = tile_size
 
         if self.unified_pos:
-            self.preprocess = MLP(fun_dim + self.ref * self.ref, n_hidden * 2,
-                                  n_hidden, n_layers=0, res=False, act=act)
+            self.preprocess = MLP(fun_dim + self.ref * self.ref, n_hidden * 2, n_hidden, n_layers=0, res=False, act=act)
         else:
-            self.preprocess = MLP(fun_dim + space_dim, n_hidden * 2,
-                                  n_hidden, n_layers=0, res=False, act=act)
+            self.preprocess = MLP(fun_dim + space_dim, n_hidden * 2, n_hidden, n_layers=0, res=False, act=act)
 
         if Time_Input:
             self.time_fc = nn.Sequential(
-                nn.Linear(n_hidden, n_hidden), nn.SiLU(),
+                nn.Linear(n_hidden, n_hidden),
+                nn.SiLU(),
                 nn.Linear(n_hidden, n_hidden),
             )
 
-        self.blocks = nn.ModuleList([
-            Transolver3Block(
-                num_heads=n_head,
-                hidden_dim=n_hidden,
-                dropout=dropout,
-                act=act,
-                mlp_ratio=mlp_ratio,
-                out_dim=out_dim,
-                slice_num=slice_num,
-                last_layer=(i == n_layers - 1),
-                mlp_chunk_size=mlp_chunk_size,
-            )
-            for i in range(n_layers)
-        ])
+        self.blocks = nn.ModuleList(
+            [
+                Transolver3Block(
+                    num_heads=n_head,
+                    hidden_dim=n_hidden,
+                    dropout=dropout,
+                    act=act,
+                    mlp_ratio=mlp_ratio,
+                    out_dim=out_dim,
+                    slice_num=slice_num,
+                    last_layer=(i == n_layers - 1),
+                    mlp_chunk_size=mlp_chunk_size,
+                )
+                for i in range(n_layers)
+            ]
+        )
 
         self.initialize_weights()
-        self.placeholder = nn.Parameter(
-            (1 / n_hidden) * torch.rand(n_hidden, dtype=torch.float)
-        )
+        self.placeholder = nn.Parameter((1 / n_hidden) * torch.rand(n_hidden, dtype=torch.float))
 
     def initialize_weights(self):
         self.apply(self._init_weights)
@@ -108,12 +108,12 @@ class Transolver3(nn.Module):
         gridx = gridx.reshape(1, self.ref, 1, 1).repeat([batchsize, 1, self.ref, 1])
         gridy = torch.tensor(np.linspace(0, 1, self.ref), dtype=torch.float)
         gridy = gridy.reshape(1, 1, self.ref, 1).repeat([batchsize, self.ref, 1, 1])
-        grid_ref = torch.cat((gridx, gridy), dim=-1).to(x.device).reshape(
-            batchsize, self.ref * self.ref, 2
+        grid_ref = torch.cat((gridx, gridy), dim=-1).to(x.device).reshape(batchsize, self.ref * self.ref, 2)
+        pos = (
+            torch.sqrt(torch.sum((x[:, :, None, :] - grid_ref[:, None, :, :]) ** 2, dim=-1))
+            .reshape(batchsize, x.shape[1], self.ref * self.ref)
+            .contiguous()
         )
-        pos = torch.sqrt(
-            torch.sum((x[:, :, None, :] - grid_ref[:, None, :, :]) ** 2, dim=-1)
-        ).reshape(batchsize, x.shape[1], self.ref * self.ref).contiguous()
         return pos
 
     def _preprocess(self, x, fx=None, T=None):
@@ -129,14 +129,14 @@ class Transolver3(nn.Module):
 
         if T is not None and self.Time_Input:
             from transolver3.common import timestep_embedding
+
             Time_emb = timestep_embedding(T, self.n_hidden).repeat(1, x.shape[1], 1)
             Time_emb = self.time_fc(Time_emb)
             fx = fx + Time_emb
 
         return fx
 
-    def forward(self, x, fx=None, T=None, num_tiles=None, tile_size=None,
-                subset_indices=None):
+    def forward(self, x, fx=None, T=None, num_tiles=None, tile_size=None, subset_indices=None):
         """Forward pass.
 
         Args:
@@ -171,8 +171,7 @@ class Transolver3(nn.Module):
     # --- Physical State Caching (Inference) ---
 
     @torch.no_grad()
-    def cache_physical_states(self, x, fx=None, T=None, num_tiles=0,
-                              chunk_size=None):
+    def cache_physical_states(self, x, fx=None, T=None, num_tiles=0, chunk_size=None):
         """Build physical state cache from the full mesh.
 
         Processes the mesh in chunks if chunk_size is specified, accumulating
@@ -295,8 +294,7 @@ class Transolver3(nn.Module):
         return fx
 
     @torch.no_grad()
-    def full_mesh_inference(self, x, fx=None, T=None, num_tiles=0,
-                            cache_chunk_size=None, decode_chunk_size=None):
+    def full_mesh_inference(self, x, fx=None, T=None, num_tiles=0, cache_chunk_size=None, decode_chunk_size=None):
         """End-to-end inference on a full industrial-scale mesh.
 
         Two phases:
@@ -315,9 +313,7 @@ class Transolver3(nn.Module):
             output: (B, N, out_dim) predictions for all mesh points
         """
         # Phase 1: Build cache
-        cache = self.cache_physical_states(
-            x, fx, T, num_tiles=num_tiles, chunk_size=cache_chunk_size
-        )
+        cache = self.cache_physical_states(x, fx, T, num_tiles=num_tiles, chunk_size=cache_chunk_size)
 
         N = x.shape[1]
         if decode_chunk_size is None or decode_chunk_size >= N:

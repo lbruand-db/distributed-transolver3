@@ -96,7 +96,9 @@ def test_pyfunc_predict_with_normalizers(small_model, model_config):
 
     with tempfile.TemporaryDirectory() as tmpdir:
         artifacts = _save_model_artifacts(
-            small_model, model_config, tmpdir,
+            small_model,
+            model_config,
+            tmpdir,
             normalizers={"input": input_norm, "target": target_norm},
         )
         context = MockContext(artifacts)
@@ -132,4 +134,5 @@ def test_register_serving_model():
     """register_serving_model requires mlflow (import guard test)."""
     mlflow = pytest.importorskip("mlflow", reason="mlflow required")  # noqa: F841
     from transolver3.serving import register_serving_model
+
     assert callable(register_serving_model)

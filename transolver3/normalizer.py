@@ -44,9 +44,9 @@ class InputNormalizer(nn.Module):
         self.scale = scale
         self.per_sample = per_sample
         self.eps = eps
-        self.register_buffer('data_min', torch.tensor(0.0))
-        self.register_buffer('data_max', torch.tensor(1.0))
-        self.register_buffer('fitted', torch.tensor(False))
+        self.register_buffer("data_min", torch.tensor(0.0))
+        self.register_buffer("data_max", torch.tensor(1.0))
+        self.register_buffer("fitted", torch.tensor(False))
 
     def fit(self, coords):
         """Compute dataset-level min/max from training coordinates.
@@ -169,9 +169,9 @@ class TargetNormalizer(nn.Module):
     def __init__(self, out_dim=1, eps=1e-8):
         super().__init__()
         self.eps = eps
-        self.register_buffer('mean', torch.zeros(1, 1, out_dim))
-        self.register_buffer('std', torch.ones(1, 1, out_dim))
-        self.register_buffer('fitted', torch.tensor(False))
+        self.register_buffer("mean", torch.zeros(1, 1, out_dim))
+        self.register_buffer("std", torch.ones(1, 1, out_dim))
+        self.register_buffer("fitted", torch.tensor(False))
 
     def fit(self, targets):
         """Compute normalization statistics from a full target tensor.
@@ -217,14 +217,14 @@ class TargetNormalizer(nn.Module):
 
             if running_sum is None:
                 running_sum = flat.sum(dim=0)
-                running_sq_sum = (flat ** 2).sum(dim=0)
+                running_sq_sum = (flat**2).sum(dim=0)
             else:
                 running_sum = running_sum + flat.sum(dim=0)
-                running_sq_sum = running_sq_sum + (flat ** 2).sum(dim=0)
+                running_sq_sum = running_sq_sum + (flat**2).sum(dim=0)
             total_count += n
 
         mean = running_sum / total_count
-        var = running_sq_sum / total_count - mean ** 2
+        var = running_sq_sum / total_count - mean**2
         # Clamp variance to avoid sqrt of negative due to numerical issues
         std = torch.sqrt(var.clamp(min=0)) + self.eps
 

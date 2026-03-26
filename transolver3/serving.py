@@ -149,8 +149,7 @@ def register_serving_model(
         import mlflow.pyfunc
     except ImportError:
         raise ImportError(
-            "mlflow is required for register_serving_model. "
-            "Install with: pip install transolver3[databricks]"
+            "mlflow is required for register_serving_model. Install with: pip install transolver3[databricks]"
         )
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -212,8 +211,7 @@ def deploy_serving_endpoint(model_name, endpoint_name, catalog="ml", schema="tra
         )
     except ImportError:
         raise ImportError(
-            "databricks-sdk is required for deploy_serving_endpoint. "
-            "Install with: pip install transolver3[databricks]"
+            "databricks-sdk is required for deploy_serving_endpoint. Install with: pip install transolver3[databricks]"
         )
 
     client = WorkspaceClient()

@@ -15,7 +15,7 @@ import torch
 import torch.distributed as dist
 
 
-def setup_distributed(backend='nccl'):
+def setup_distributed(backend="nccl"):
     """Initialize distributed process group.
 
     Called automatically by torchrun / TorchDistributor. Falls back to
@@ -24,15 +24,15 @@ def setup_distributed(backend='nccl'):
     Returns:
         (rank, world_size) — or (0, 1) if not distributed.
     """
-    if not dist.is_available() or 'RANK' not in os.environ:
+    if not dist.is_available() or "RANK" not in os.environ:
         return 0, 1
 
-    rank = int(os.environ['RANK'])
-    world_size = int(os.environ['WORLD_SIZE'])
-    local_rank = int(os.environ.get('LOCAL_RANK', 0))
+    rank = int(os.environ["RANK"])
+    world_size = int(os.environ["WORLD_SIZE"])
+    local_rank = int(os.environ.get("LOCAL_RANK", 0))
 
-    if backend == 'nccl' and not torch.cuda.is_available():
-        backend = 'gloo'
+    if backend == "nccl" and not torch.cuda.is_available():
+        backend = "gloo"
 
     dist.init_process_group(backend=backend, rank=rank, world_size=world_size)
 
@@ -57,14 +57,14 @@ def is_main_process():
 
 def get_local_rank():
     """Get local rank (GPU index on this node)."""
-    return int(os.environ.get('LOCAL_RANK', 0))
+    return int(os.environ.get("LOCAL_RANK", 0))
 
 
 def get_device():
     """Get the torch device for the current rank."""
     if torch.cuda.is_available():
-        return torch.device(f'cuda:{get_local_rank()}')
-    return torch.device('cpu')
+        return torch.device(f"cuda:{get_local_rank()}")
+    return torch.device("cpu")
 
 
 def mesh_shard_range(total_points, rank, world_size):

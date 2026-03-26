@@ -106,6 +106,7 @@ SCENARIOS = {
 
 # ── Cast file writer ────────────────────────────────────────────────────────
 
+
 class CastRecorder:
     """Accumulates terminal output events and writes an asciinema .cast."""
 
@@ -173,6 +174,7 @@ class CastRecorder:
 
 # ── Rendering helpers (Claude Code style) ───────────────────────────────────
 
+
 def render_prompt_line(rec: CastRecorder, cwd: str):
     """Render a Claude Code-style prompt."""
     short_cwd = cwd.replace(os.path.expanduser("~"), "~")
@@ -215,7 +217,7 @@ def render_tool_block(rec: CastRecorder, tool_name: str, tool_input: dict):
     elif tool_name == "Edit" and "file_path" in tool_input:
         detail = tool_input["file_path"]
     elif tool_name == "Grep" and "pattern" in tool_input:
-        detail = f'/{tool_input["pattern"]}/'
+        detail = f"/{tool_input['pattern']}/"
     elif tool_name == "Glob" and "pattern" in tool_input:
         detail = tool_input["pattern"]
 
@@ -225,9 +227,7 @@ def render_tool_block(rec: CastRecorder, tool_name: str, tool_input: dict):
     rec.pause(0.2)
 
 
-def render_tool_result_block(
-    rec: CastRecorder, content: str, is_error: bool = False, max_lines: int = 8
-):
+def render_tool_result_block(rec: CastRecorder, content: str, is_error: bool = False, max_lines: int = 8):
     """Render a truncated tool result."""
     if not content:
         return
@@ -285,6 +285,7 @@ def render_result_footer(
 
 # ── Main: run claude and record ─────────────────────────────────────────────
 
+
 def record_session(
     prompt: str,
     output_path: str,
@@ -304,7 +305,8 @@ def record_session(
     cmd = [
         claude_bin,
         "-p",
-        "--output-format", "stream-json",
+        "--output-format",
+        "stream-json",
         "--dangerously-skip-permissions",
         "--verbose",
     ]
@@ -399,13 +401,8 @@ def record_session(
                 is_error = event.get("is_error", False)
                 if isinstance(content, list):
                     # Content can be a list of text blocks
-                    content = "\n".join(
-                        b.get("text", "") for b in content
-                        if isinstance(b, dict)
-                    )
-                render_tool_result_block(
-                    rec, str(content), is_error=is_error
-                )
+                    content = "\n".join(b.get("text", "") for b in content if isinstance(b, dict))
+                render_tool_result_block(rec, str(content), is_error=is_error)
 
             elif etype == "result":
                 result_data = event.get("result", event)
@@ -443,10 +440,7 @@ def record_session(
     # ── Outro ──
     rec.pause(0.5)
     rec.newline()
-    rec.emit(
-        f"  {B_GREEN}{BOLD}Demo complete.{RESET} "
-        f"{DIM}See skills/ for full documentation.{RESET}"
-    )
+    rec.emit(f"  {B_GREEN}{BOLD}Demo complete.{RESET} {DIM}See skills/ for full documentation.{RESET}")
     rec.newline()
     rec.pause(2.0)
 
@@ -455,12 +449,10 @@ def record_session(
 
 # ── CLI ─────────────────────────────────────────────────────────────────────
 
+
 def main():
     parser = argparse.ArgumentParser(
-        description=(
-            "Record an asciinema demo of a real Claude Code session "
-            "with Transolver-3 skills"
-        ),
+        description=("Record an asciinema demo of a real Claude Code session with Transolver-3 skills"),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=textwrap.dedent("""\
             Examples:
@@ -471,38 +463,49 @@ def main():
         """),
     )
     parser.add_argument(
-        "--scenario", "-s",
+        "--scenario",
+        "-s",
         choices=list(SCENARIOS.keys()),
         default="full",
         help="Predefined demo scenario (default: full)",
     )
     parser.add_argument(
-        "--prompt", "-p",
+        "--prompt",
+        "-p",
         help="Custom prompt (overrides --scenario)",
     )
     parser.add_argument(
-        "--output", "-o",
+        "--output",
+        "-o",
         default="demo.cast",
         help="Output .cast file path (default: demo.cast)",
     )
     parser.add_argument(
-        "--width", type=int, default=120,
+        "--width",
+        type=int,
+        default=120,
         help="Terminal width (default: 120)",
     )
     parser.add_argument(
-        "--height", type=int, default=40,
+        "--height",
+        type=int,
+        default=40,
         help="Terminal height (default: 40)",
     )
     parser.add_argument(
-        "--timeout", type=int, default=600,
+        "--timeout",
+        type=int,
+        default=600,
         help="Timeout in seconds (default: 600)",
     )
     parser.add_argument(
-        "--model", "-m",
+        "--model",
+        "-m",
         help="Override model (e.g., claude-sonnet-4-6)",
     )
     parser.add_argument(
-        "--list-scenarios", action="store_true",
+        "--list-scenarios",
+        action="store_true",
         help="List available scenarios and exit",
     )
     parser.add_argument(

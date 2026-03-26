@@ -27,15 +27,11 @@ def main():
     spark = SparkSession.builder.getOrCreate()
 
     print(f"Registering mesh metadata from {args.data_dir}...")
-    meta_df = register_mesh_metadata(
-        spark, args.catalog, args.schema, "mesh_metadata", args.data_dir
-    )
+    meta_df = register_mesh_metadata(spark, args.catalog, args.schema, "mesh_metadata", args.data_dir)
     print(f"Registered {meta_df.count()} samples in {args.catalog}.{args.schema}.mesh_metadata")
 
     print("Computing per-sample statistics...")
-    stats_df = preprocess_with_spark(
-        spark, args.data_dir, args.catalog, args.schema, "mesh_stats"
-    )
+    stats_df = preprocess_with_spark(spark, args.data_dir, args.catalog, args.schema, "mesh_stats")
     print(f"Computed stats for {stats_df.count()} samples in {args.catalog}.{args.schema}.mesh_stats")
 
 

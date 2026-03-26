@@ -73,8 +73,14 @@ GPU_PROFILES = {
         "description": "NVIDIA A10G (g5.xlarge) — 24 GB — paper config",
         "instance_type": "g5.xlarge",
         "model": dict(
-            space_dim=22, n_layers=24, n_hidden=256, n_head=8,
-            slice_num=64, fun_dim=0, out_dim=4, mlp_ratio=1,
+            space_dim=22,
+            n_layers=24,
+            n_hidden=256,
+            n_head=8,
+            slice_num=64,
+            fun_dim=0,
+            out_dim=4,
+            mlp_ratio=1,
         ),
         "subset_size": 800_000,
         "tile_size": 100_000,
@@ -83,8 +89,15 @@ GPU_PROFILES = {
         "decode_chunk_size": 50_000,
         "use_fp16": True,
         "mesh_sizes": [
-            50_000, 100_000, 200_000, 400_000, 800_000,
-            1_000_000, 2_000_000, 4_000_000, 8_000_000,
+            50_000,
+            100_000,
+            200_000,
+            400_000,
+            800_000,
+            1_000_000,
+            2_000_000,
+            4_000_000,
+            8_000_000,
         ],
         "train_steps": 3,
     },
@@ -92,8 +105,14 @@ GPU_PROFILES = {
         "description": "NVIDIA A100 40 GB (p4d.24xlarge) — paper config",
         "instance_type": "p4d.24xlarge",
         "model": dict(
-            space_dim=22, n_layers=24, n_hidden=256, n_head=8,
-            slice_num=64, fun_dim=0, out_dim=4, mlp_ratio=1,
+            space_dim=22,
+            n_layers=24,
+            n_hidden=256,
+            n_head=8,
+            slice_num=64,
+            fun_dim=0,
+            out_dim=4,
+            mlp_ratio=1,
         ),
         "subset_size": 800_000,
         "tile_size": 100_000,
@@ -102,8 +121,15 @@ GPU_PROFILES = {
         "decode_chunk_size": 100_000,
         "use_fp16": True,
         "mesh_sizes": [
-            50_000, 100_000, 200_000, 400_000, 800_000,
-            1_000_000, 2_000_000, 4_000_000, 8_000_000,
+            50_000,
+            100_000,
+            200_000,
+            400_000,
+            800_000,
+            1_000_000,
+            2_000_000,
+            4_000_000,
+            8_000_000,
         ],
         "train_steps": 3,
     },
@@ -111,8 +137,14 @@ GPU_PROFILES = {
         "description": "NVIDIA A100 80 GB (p4de.24xlarge)",
         "instance_type": "p4de.24xlarge",
         "model": dict(
-            space_dim=22, n_layers=24, n_hidden=256, n_head=8,
-            slice_num=64, fun_dim=0, out_dim=4, mlp_ratio=1,
+            space_dim=22,
+            n_layers=24,
+            n_hidden=256,
+            n_head=8,
+            slice_num=64,
+            fun_dim=0,
+            out_dim=4,
+            mlp_ratio=1,
         ),
         "subset_size": 400_000,
         "tile_size": 100_000,
@@ -121,8 +153,12 @@ GPU_PROFILES = {
         "decode_chunk_size": 100_000,
         "use_fp16": True,
         "mesh_sizes": [
-            10_000, 100_000, 400_000, 1_000_000,
-            4_000_000, 8_000_000,
+            10_000,
+            100_000,
+            400_000,
+            1_000_000,
+            4_000_000,
+            8_000_000,
         ],
         "train_steps": 3,
     },
@@ -132,6 +168,7 @@ GPU_PROFILES = {
 # ═══════════════════════════════════════════════════════════════════
 # UTILITIES
 # ═══════════════════════════════════════════════════════════════════
+
 
 def generate_synthetic_drivaer(N, space_dim=22, out_dim=4, device="cuda"):
     """Synthetic data matching DrivAer ML surface structure.
@@ -155,7 +192,7 @@ def reset_gpu():
 def peak_mb():
     """Peak GPU memory allocated (MB) since last reset."""
     torch.cuda.synchronize()
-    return torch.cuda.max_memory_allocated() / (1024 ** 2)
+    return torch.cuda.max_memory_allocated() / (1024**2)
 
 
 def gpu_info():
@@ -164,7 +201,7 @@ def gpu_info():
         return "CPU", 0
     props = torch.cuda.get_device_properties(0)
     total = getattr(props, "total_memory", None) or getattr(props, "total_mem", 0)
-    return props.name, total / (1024 ** 2)
+    return props.name, total / (1024**2)
 
 
 def detect_gpu_type():
@@ -173,10 +210,10 @@ def detect_gpu_type():
     if "A10" in name:
         return "a10g"
     if "A100" in name:
-        total_gb = gpu_info()[1] * (1024 ** 2) / (1024 ** 3)
+        total_gb = gpu_info()[1] * (1024**2) / (1024**3)
         return "a100_80" if total_gb > 50 else "a100_40"
     # Fallback: pick profile based on VRAM
-    total_gb = gpu_info()[1] * (1024 ** 2) / (1024 ** 3)
+    total_gb = gpu_info()[1] * (1024**2) / (1024**3)
     if total_gb >= 60:
         return "a100_80"
     if total_gb >= 30:
@@ -187,6 +224,7 @@ def detect_gpu_type():
 # ═══════════════════════════════════════════════════════════════════
 # PHASE BENCHMARKS
 # ═══════════════════════════════════════════════════════════════════
+
 
 def benchmark_training(model, N, profile, device):
     """Phase 1: Amortized training — measure peak GPU memory over a few steps."""
@@ -208,7 +246,12 @@ def benchmark_training(model, N, profile, device):
     t0 = time.time()
     for _ in range(profile["train_steps"]):
         loss_val = train_step(
-            model, x, None, target, optimizer, scheduler,
+            model,
+            x,
+            None,
+            target,
+            optimizer,
+            scheduler,
             sampler=sampler,
             tile_size=profile["tile_size"],
             scaler=scaler,
@@ -271,6 +314,7 @@ def benchmark_decode(engine, N, cache, profile, device):
 # MAIN BENCHMARK
 # ═══════════════════════════════════════════════════════════════════
 
+
 def run_oom_safe(fn, label):
     """Run a benchmark function, catching OOM gracefully."""
     try:
@@ -296,8 +340,10 @@ def run_benchmark(gpu_type):
     print(f"  GPU:        {gpu_name} ({gpu_total_mb:,.0f} MB)")
     print(f"  Profile:    {gpu_type} — {profile['description']}")
     model_cfg = profile["model"]
-    print(f"  Model:      {model_cfg['n_layers']}L / {model_cfg['n_hidden']}C / "
-          f"{model_cfg['n_head']}H / {model_cfg['slice_num']}M slices")
+    print(
+        f"  Model:      {model_cfg['n_layers']}L / {model_cfg['n_hidden']}C / "
+        f"{model_cfg['n_head']}H / {model_cfg['slice_num']}M slices"
+    )
     print(f"  FP16:       {profile['use_fp16']}")
     print(f"  Subset:     {profile['subset_size']:,}")
     print(f"  Tile size:  {profile['tile_size']:,}")
@@ -322,7 +368,9 @@ def run_benchmark(gpu_type):
 
         row = {
             "mesh_size": N,
-            "train": None, "cache": None, "decode": None,
+            "train": None,
+            "cache": None,
+            "decode": None,
             "status": "OK",
         }
 
@@ -333,8 +381,7 @@ def run_benchmark(gpu_type):
         )
         if result and result.get("peak_mb") != "OOM":
             row["train"] = result
-            print(f"  Train:  {result['peak_mb']:>8,.1f} MB | "
-                  f"loss={result['loss']:.6f} | {result['time_s']:.2f}s")
+            print(f"  Train:  {result['peak_mb']:>8,.1f} MB | loss={result['loss']:.6f} | {result['time_s']:.2f}s")
         else:
             row["train"] = result
             row["status"] = "OOM_TRAIN"
@@ -361,8 +408,7 @@ def run_benchmark(gpu_type):
             # Success: (metrics_dict, cache, engine)
             cache_result, cache, engine = result
             row["cache"] = cache_result
-            print(f"  Cache:  {cache_result['peak_mb']:>8,.1f} MB | "
-                  f"{cache_result['time_s']:.2f}s")
+            print(f"  Cache:  {cache_result['peak_mb']:>8,.1f} MB | {cache_result['time_s']:.2f}s")
         else:
             # OOM: run_oom_safe returned a dict with error info
             row["cache"] = result
@@ -377,8 +423,7 @@ def run_benchmark(gpu_type):
             )
             if result and result.get("peak_mb") != "OOM":
                 row["decode"] = result
-                print(f"  Decode: {result['peak_mb']:>8,.1f} MB | "
-                      f"{result['time_s']:.2f}s")
+                print(f"  Decode: {result['peak_mb']:>8,.1f} MB | {result['time_s']:.2f}s")
             else:
                 row["decode"] = result
                 row["status"] = "OOM_DECODE"
@@ -395,8 +440,10 @@ def run_benchmark(gpu_type):
 
 def print_results_table(results):
     """Print a formatted results table."""
-    hdr = (f"{'Mesh Size':>12} | {'Train MB':>10} {'Time':>7} {'Loss':>12} | "
-           f"{'Cache MB':>10} {'Time':>7} | {'Decode MB':>10} {'Time':>7} | Status")
+    hdr = (
+        f"{'Mesh Size':>12} | {'Train MB':>10} {'Time':>7} {'Loss':>12} | "
+        f"{'Cache MB':>10} {'Time':>7} | {'Decode MB':>10} {'Time':>7} | Status"
+    )
     sep = "-" * len(hdr)
 
     print(f"\n{'=' * len(hdr)}")
@@ -406,6 +453,7 @@ def print_results_table(results):
     print(sep)
 
     for r in results:
+
         def _fmt(phase_data, key, fmt_str):
             if phase_data is None:
                 return "---"
@@ -436,6 +484,7 @@ def print_results_table(results):
 # ═══════════════════════════════════════════════════════════════════
 # ENTRY POINT
 # ═══════════════════════════════════════════════════════════════════
+
 
 def main():
     import argparse
@@ -480,7 +529,7 @@ def main():
     output = {
         "gpu_type": gpu_type,
         "gpu_name": torch.cuda.get_device_name(0),
-        "gpu_vram_mb": round(gpu_info()[1] * (1024 ** 2) / (1024 ** 2), 0),
+        "gpu_vram_mb": round(gpu_info()[1] * (1024**2) / (1024**2), 0),
         "profile": {k: v for k, v in GPU_PROFILES[gpu_type].items() if k != "model"},
         "model_config": GPU_PROFILES[gpu_type]["model"],
         "results": results,

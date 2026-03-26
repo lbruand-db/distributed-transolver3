@@ -3,14 +3,14 @@ import torch
 import torch.nn as nn
 
 ACTIVATION = {
-    'gelu': nn.GELU,
-    'tanh': nn.Tanh,
-    'sigmoid': nn.Sigmoid,
-    'relu': nn.ReLU,
-    'leaky_relu': nn.LeakyReLU(0.1),
-    'softplus': nn.Softplus,
-    'ELU': nn.ELU,
-    'silu': nn.SiLU,
+    "gelu": nn.GELU,
+    "tanh": nn.Tanh,
+    "sigmoid": nn.Sigmoid,
+    "relu": nn.ReLU,
+    "leaky_relu": nn.LeakyReLU(0.1),
+    "softplus": nn.Softplus,
+    "ELU": nn.ELU,
+    "silu": nn.SiLU,
 }
 
 
@@ -29,9 +29,9 @@ def timestep_embedding(timesteps, dim, max_period=10000, repeat_only=False):
         (N, dim) tensor of positional embeddings
     """
     half = dim // 2
-    freqs = torch.exp(
-        -math.log(max_period) * torch.arange(start=0, end=half, dtype=torch.float32) / half
-    ).to(device=timesteps.device)
+    freqs = torch.exp(-math.log(max_period) * torch.arange(start=0, end=half, dtype=torch.float32) / half).to(
+        device=timesteps.device
+    )
     args = timesteps[:, None].float() * freqs[None]
     embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
     if dim % 2:
@@ -40,7 +40,7 @@ def timestep_embedding(timesteps, dim, max_period=10000, repeat_only=False):
 
 
 class MLP(nn.Module):
-    def __init__(self, n_input, n_hidden, n_output, n_layers=1, act='gelu', res=True):
+    def __init__(self, n_input, n_hidden, n_output, n_layers=1, act="gelu", res=True):
         super(MLP, self).__init__()
 
         if act in ACTIVATION.keys():
@@ -54,9 +54,7 @@ class MLP(nn.Module):
         self.res = res
         self.linear_pre = nn.Sequential(nn.Linear(n_input, n_hidden), act())
         self.linear_post = nn.Linear(n_hidden, n_output)
-        self.linears = nn.ModuleList(
-            [nn.Sequential(nn.Linear(n_hidden, n_hidden), act()) for _ in range(n_layers)]
-        )
+        self.linears = nn.ModuleList([nn.Sequential(nn.Linear(n_hidden, n_hidden), act()) for _ in range(n_layers)])
 
     def forward(self, x):
         x = self.linear_pre(x)

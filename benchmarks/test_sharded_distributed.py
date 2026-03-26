@@ -53,6 +53,7 @@ def _ensure_path():
     """Ensure transolver3 is importable. Called in every subprocess."""
     import sys
     import os
+
     try:
         script_dir = os.path.dirname(os.path.abspath(__file__))
     except NameError:
@@ -73,12 +74,18 @@ _ensure_path()
 
 from transolver3.model import Transolver3  # noqa: E402
 from transolver3.amortized_training import (  # noqa: E402
-    AmortizedMeshSampler, relative_l2_loss,
-    create_optimizer, create_scheduler,
+    AmortizedMeshSampler,
+    relative_l2_loss,
+    create_optimizer,
+    create_scheduler,
 )
 from transolver3.inference import DistributedCachedInference  # noqa: E402
 from transolver3.distributed import (  # noqa: E402
-    setup_distributed, cleanup, is_main_process, get_device, mesh_shard_range,
+    setup_distributed,
+    cleanup,
+    is_main_process,
+    get_device,
+    mesh_shard_range,
 )
 
 
@@ -86,20 +93,20 @@ from transolver3.distributed import (  # noqa: E402
 # Config — deliberately small for a fast test
 # ============================================================================
 CFG = {
-    'n_points': 2000,       # small mesh
-    'space_dim': 10,        # coords(3) + normals(3) + params(4)
-    'out_dim': 4,           # pressure + wall_shear
-    'n_layers': 4,          # small model
-    'n_hidden': 64,
-    'n_head': 4,
-    'slice_num': 16,
-    'subset_size': 500,     # per-GPU amortized subset
-    'num_tiles': 2,
-    'epochs': 10,
-    'lr': 1e-3,
-    'cache_chunk_size': 500,
-    'decode_chunk_size': 500,
-    'seed': 42,
+    "n_points": 2000,  # small mesh
+    "space_dim": 10,  # coords(3) + normals(3) + params(4)
+    "out_dim": 4,  # pressure + wall_shear
+    "n_layers": 4,  # small model
+    "n_hidden": 64,
+    "n_head": 4,
+    "slice_num": 16,
+    "subset_size": 500,  # per-GPU amortized subset
+    "num_tiles": 2,
+    "epochs": 10,
+    "lr": 1e-3,
+    "cache_chunk_size": 500,
+    "decode_chunk_size": 500,
+    "seed": 42,
 }
 
 
@@ -122,32 +129,36 @@ def test_sharded_training(rank, world_size, device):
     cfg = CFG
 
     model = Transolver3(
-        space_dim=cfg['space_dim'], n_layers=cfg['n_layers'],
-        n_hidden=cfg['n_hidden'], n_head=cfg['n_head'],
-        fun_dim=0, out_dim=cfg['out_dim'], slice_num=cfg['slice_num'],
-        mlp_ratio=1, dropout=0.0, num_tiles=cfg['num_tiles'],
+        space_dim=cfg["space_dim"],
+        n_layers=cfg["n_layers"],
+        n_hidden=cfg["n_hidden"],
+        n_head=cfg["n_head"],
+        fun_dim=0,
+        out_dim=cfg["out_dim"],
+        slice_num=cfg["slice_num"],
+        mlp_ratio=1,
+        dropout=0.0,
+        num_tiles=cfg["num_tiles"],
     ).to(device)
 
-    model_ddp = DDP(model, device_ids=[device] if device.type == 'cuda' else None)
+    model_ddp = DDP(model, device_ids=[device] if device.type == "cuda" else None)
 
     # Generate full synthetic mesh
-    x_full, target_full = generate_synthetic_data(
-        cfg['n_points'], cfg['space_dim'], cfg['out_dim'], seed=cfg['seed']
-    )
+    x_full, target_full = generate_synthetic_data(cfg["n_points"], cfg["space_dim"], cfg["out_dim"], seed=cfg["seed"])
 
     # Each rank gets its shard
-    start, end = mesh_shard_range(cfg['n_points'], rank, world_size)
+    start, end = mesh_shard_range(cfg["n_points"], rank, world_size)
     x_local = x_full[:, start:end].to(device)
     target_local = target_full[:, start:end].to(device)
 
-    optimizer = create_optimizer(model_ddp, lr=cfg['lr'] * world_size)
-    total_steps = cfg['epochs']
+    optimizer = create_optimizer(model_ddp, lr=cfg["lr"] * world_size)
+    total_steps = cfg["epochs"]
     scheduler = create_scheduler(optimizer, total_steps)
-    sampler = AmortizedMeshSampler(cfg['subset_size'], seed=cfg['seed'] + rank)
+    sampler = AmortizedMeshSampler(cfg["subset_size"], seed=cfg["seed"] + rank)
 
     t0 = time.time()
     losses = []
-    for epoch in range(cfg['epochs']):
+    for epoch in range(cfg["epochs"]):
         model_ddp.train()
         optimizer.zero_grad()
 
@@ -156,7 +167,7 @@ def test_sharded_training(rank, world_size, device):
         x_sub = x_local[:, indices]
         target_sub = target_local[:, indices]
 
-        pred = model_ddp(x_sub, num_tiles=cfg['num_tiles'])
+        pred = model_ddp(x_sub, num_tiles=cfg["num_tiles"])
         loss = relative_l2_loss(pred, target_sub)
         loss.backward()
 
@@ -181,28 +192,24 @@ def test_sharded_cache_correctness(rank, world_size, device, model_ddp):
     log("=== Test 2: Sharded Cache Correctness ===", rank)
     cfg = CFG
 
-    raw_model = model_ddp.module if hasattr(model_ddp, 'module') else model_ddp
+    raw_model = model_ddp.module if hasattr(model_ddp, "module") else model_ddp
     raw_model.eval()
 
-    x_full, _ = generate_synthetic_data(
-        cfg['n_points'], cfg['space_dim'], cfg['out_dim'], seed=cfg['seed'] + 100
-    )
+    x_full, _ = generate_synthetic_data(cfg["n_points"], cfg["space_dim"], cfg["out_dim"], seed=cfg["seed"] + 100)
     x_full = x_full.to(device)
 
     # Single-GPU cache (ground truth — all ranks compute this)
-    cache_single = raw_model.cache_physical_states(
-        x_full, chunk_size=cfg['cache_chunk_size']
-    )
+    cache_single = raw_model.cache_physical_states(x_full, chunk_size=cfg["cache_chunk_size"])
 
     # Sharded cache: each rank processes its partition
-    start, end = mesh_shard_range(cfg['n_points'], rank, world_size)
+    start, end = mesh_shard_range(cfg["n_points"], rank, world_size)
     x_local = x_full[:, start:end]
 
     engine = DistributedCachedInference(
         raw_model,
-        cache_chunk_size=cfg['cache_chunk_size'],
-        decode_chunk_size=cfg['decode_chunk_size'],
-        num_tiles=cfg['num_tiles'],
+        cache_chunk_size=cfg["cache_chunk_size"],
+        decode_chunk_size=cfg["decode_chunk_size"],
+        num_tiles=cfg["num_tiles"],
     )
     cache_sharded = engine.build_cache(x_local)
 
@@ -226,25 +233,23 @@ def test_sharded_decode(rank, world_size, device, model_ddp, cache):
     log("=== Test 3: Sharded Decode ===", rank)
     cfg = CFG
 
-    raw_model = model_ddp.module if hasattr(model_ddp, 'module') else model_ddp
+    raw_model = model_ddp.module if hasattr(model_ddp, "module") else model_ddp
     raw_model.eval()
 
-    x_full, _ = generate_synthetic_data(
-        cfg['n_points'], cfg['space_dim'], cfg['out_dim'], seed=cfg['seed'] + 100
-    )
+    x_full, _ = generate_synthetic_data(cfg["n_points"], cfg["space_dim"], cfg["out_dim"], seed=cfg["seed"] + 100)
     x_full = x_full.to(device)
 
     # Single-GPU decode (ground truth)
     pred_single = raw_model.decode_from_cache(x_full, cache)
 
     # Sharded decode: each rank decodes its partition
-    start, end = mesh_shard_range(cfg['n_points'], rank, world_size)
+    start, end = mesh_shard_range(cfg["n_points"], rank, world_size)
     x_local = x_full[:, start:end]
 
     engine = DistributedCachedInference(
         raw_model,
-        cache_chunk_size=cfg['cache_chunk_size'],
-        decode_chunk_size=cfg['decode_chunk_size'],
+        cache_chunk_size=cfg["cache_chunk_size"],
+        decode_chunk_size=cfg["decode_chunk_size"],
     )
     pred_local = engine.decode(x_local, cache)
 
@@ -269,47 +274,47 @@ def main():
     device = get_device()
 
     log(f"Running on {world_size} {'GPU' if device.type == 'cuda' else 'CPU'} workers", rank)
-    if device.type == 'cuda':
+    if device.type == "cuda":
         log(f"  GPU: {torch.cuda.get_device_name(device)}", rank)
         log(f"  VRAM: {torch.cuda.get_device_properties(device).total_memory / 1e9:.1f} GB", rank)
 
-    results = {'world_size': world_size, 'device': str(device), 'tests': {}}
+    results = {"world_size": world_size, "device": str(device), "tests": {}}
 
     try:
         # Test 1: Sharded training
         t0 = time.time()
         model = test_sharded_training(rank, world_size, device)
-        results['tests']['sharded_training'] = {'status': 'PASSED', 'time_s': time.time() - t0}
+        results["tests"]["sharded_training"] = {"status": "PASSED", "time_s": time.time() - t0}
 
         # Test 2: Sharded cache correctness
         t0 = time.time()
         cache = test_sharded_cache_correctness(rank, world_size, device, model)
-        results['tests']['sharded_cache'] = {'status': 'PASSED', 'time_s': time.time() - t0}
+        results["tests"]["sharded_cache"] = {"status": "PASSED", "time_s": time.time() - t0}
 
         # Test 3: Sharded decode
         t0 = time.time()
         test_sharded_decode(rank, world_size, device, model, cache)
-        results['tests']['sharded_decode'] = {'status': 'PASSED', 'time_s': time.time() - t0}
+        results["tests"]["sharded_decode"] = {"status": "PASSED", "time_s": time.time() - t0}
 
     except Exception as e:
         log(f"FAILED: {e}", rank)
         import traceback
+
         traceback.print_exc()
-        results['tests']['error'] = str(e)
+        results["tests"]["error"] = str(e)
 
     # Summary
     log("", rank)
     log("=" * 50, rank)
-    n_passed = sum(1 for v in results['tests'].values()
-                   if isinstance(v, dict) and v.get('status') == 'PASSED')
-    n_total = sum(1 for v in results['tests'].values() if isinstance(v, dict))
+    n_passed = sum(1 for v in results["tests"].values() if isinstance(v, dict) and v.get("status") == "PASSED")
+    n_total = sum(1 for v in results["tests"].values() if isinstance(v, dict))
     log(f"  {n_passed}/{n_total} tests PASSED on {world_size} GPUs", rank)
     log("=" * 50, rank)
 
     # Save results (rank 0 only)
     if is_main_process():
-        out_path = os.path.join(REPO_ROOT, 'benchmarks', 'distributed_test_results.json')
-        with open(out_path, 'w') as f:
+        out_path = os.path.join(REPO_ROOT, "benchmarks", "distributed_test_results.json")
+        with open(out_path, "w") as f:
             json.dump(results, f, indent=2)
         log(f"Results saved to {out_path}", rank)
 
@@ -324,6 +329,7 @@ def launch_on_databricks(num_gpus=2):
     pickle/import issues with transolver3.
     """
     from pyspark.ml.torch.distributor import TorchDistributor
+
     # Resolve the path to this script file.
     # On Databricks, spark_python_task runs via exec() so __file__ may not exist.
     # Fall back to sys.argv or the known bundle path.
@@ -331,11 +337,11 @@ def launch_on_databricks(num_gpus=2):
         script_path = os.path.abspath(__file__)
     except NameError:
         # Databricks exec() context: reconstruct from sys.argv or SCRIPT_DIR
-        script_path = os.path.join(SCRIPT_DIR, 'test_sharded_distributed.py')
+        script_path = os.path.join(SCRIPT_DIR, "test_sharded_distributed.py")
         if not os.path.exists(script_path):
             # Try argv
             for arg in sys.argv:
-                if 'test_sharded_distributed' in arg:
+                if "test_sharded_distributed" in arg:
                     script_path = arg
                     break
     print(f"[LAUNCH] Starting TorchDistributor with {num_gpus} GPUs")
@@ -348,13 +354,12 @@ def launch_on_databricks(num_gpus=2):
     distributor.run(script_path)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     import argparse
+
     parser = argparse.ArgumentParser()
-    parser.add_argument('--databricks', action='store_true',
-                        help='Launch via TorchDistributor (Databricks runtime)')
-    parser.add_argument('--num_gpus', type=int, default=2,
-                        help='Number of GPUs for TorchDistributor (default: 2)')
+    parser.add_argument("--databricks", action="store_true", help="Launch via TorchDistributor (Databricks runtime)")
+    parser.add_argument("--num_gpus", type=int, default=2, help="Number of GPUs for TorchDistributor (default: 2)")
     args, _ = parser.parse_known_args()
 
     if args.databricks:

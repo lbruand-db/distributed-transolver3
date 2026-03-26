@@ -42,16 +42,16 @@ class Transolver3Block(nn.Module):
     """
 
     def __init__(
-            self,
-            num_heads: int,
-            hidden_dim: int,
-            dropout: float,
-            act='gelu',
-            mlp_ratio=4,
-            last_layer=False,
-            out_dim=1,
-            slice_num=32,
-            mlp_chunk_size=0,
+        self,
+        num_heads: int,
+        hidden_dim: int,
+        dropout: float,
+        act="gelu",
+        mlp_ratio=4,
+        last_layer=False,
+        out_dim=1,
+        slice_num=32,
+        mlp_chunk_size=0,
     ):
         super().__init__()
         self.last_layer = last_layer
@@ -65,22 +65,25 @@ class Transolver3Block(nn.Module):
             slice_num=slice_num,
         )
         self.ln_2 = nn.LayerNorm(hidden_dim)
-        self.mlp = MLP(hidden_dim, hidden_dim * mlp_ratio, hidden_dim,
-                        n_layers=0, res=False, act=act)
+        self.mlp = MLP(hidden_dim, hidden_dim * mlp_ratio, hidden_dim, n_layers=0, res=False, act=act)
         if self.last_layer:
             self.ln_3 = nn.LayerNorm(hidden_dim)
             self.mlp2 = nn.Linear(hidden_dim, out_dim)
 
     def _mlp_residual(self, fx):
         """LN + MLP residual, possibly chunked for large N."""
+
         def fn(x):
             return self.mlp(self.ln_2(x))
+
         return _pointwise_chunked(fn, fx, self.mlp_chunk_size) + fx
 
     def _last_layer_head(self, fx):
         """Final projection, possibly chunked."""
+
         def fn(x):
             return self.mlp2(self.ln_3(x))
+
         return _pointwise_chunked(fn, fx, self.mlp_chunk_size)
 
     def forward(self, fx, num_tiles=0, tile_size=0):

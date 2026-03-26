@@ -19,20 +19,27 @@ import os
 import torch
 import torch.nn as nn
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from transolver3.physics_attention_v3 import PhysicsAttentionV3, _slice_aggregate, _deslice, _resolve_num_tiles
 from transolver3.transolver3_block import Transolver3Block, _pointwise_chunked
 from transolver3.model import Transolver3
 from transolver3.inference import CachedInference
 from transolver3.amortized_training import (
-    AmortizedMeshSampler, relative_l2_loss, create_optimizer, create_scheduler,
+    AmortizedMeshSampler,
+    relative_l2_loss,
+    create_optimizer,
+    create_scheduler,
     train_step,
 )
 from transolver3.normalizer import InputNormalizer, TargetNormalizer
 from transolver3.profiling import (
-    profile_memory, profile_latency, benchmark_scaling, format_benchmark_table,
-    MemoryResult, LatencyResult,
+    profile_memory,
+    profile_latency,
+    benchmark_scaling,
+    format_benchmark_table,
+    MemoryResult,
+    LatencyResult,
 )
 
 
@@ -103,14 +110,14 @@ def test_block_forward():
     B, N, C = 2, 100, 64
     out_dim = 4
 
-    block = Transolver3Block(num_heads=4, hidden_dim=C, dropout=0.0,
-                              slice_num=16, last_layer=False)
+    block = Transolver3Block(num_heads=4, hidden_dim=C, dropout=0.0, slice_num=16, last_layer=False)
     x = torch.randn(B, N, C)
     out = block(x)
     assert out.shape == (B, N, C), f"Non-last block: expected {(B, N, C)}, got {out.shape}"
 
-    block_last = Transolver3Block(num_heads=4, hidden_dim=C, dropout=0.0,
-                                   slice_num=16, last_layer=True, out_dim=out_dim)
+    block_last = Transolver3Block(
+        num_heads=4, hidden_dim=C, dropout=0.0, slice_num=16, last_layer=True, out_dim=out_dim
+    )
     out = block_last(x)
     assert out.shape == (B, N, out_dim), f"Last block: expected {(B, N, out_dim)}, got {out.shape}"
     print("PASS: block forward shapes correct")
@@ -171,8 +178,7 @@ def test_amortized_training():
 
     indices = torch.randperm(N)[:subset_size]
     out = model(x, subset_indices=indices)
-    assert out.shape == (B, subset_size, out_dim), \
-        f"Expected {(B, subset_size, out_dim)}, got {out.shape}"
+    assert out.shape == (B, subset_size, out_dim), f"Expected {(B, subset_size, out_dim)}, got {out.shape}"
 
     loss = relative_l2_loss(out, target[:, indices])
     loss.backward()
@@ -232,7 +238,7 @@ def test_scheduler():
 
     lrs = []
     for step in range(1000):
-        lrs.append(optimizer.param_groups[0]['lr'])
+        lrs.append(optimizer.param_groups[0]["lr"])
         optimizer.step()
         scheduler.step()
 
@@ -244,6 +250,7 @@ def test_scheduler():
 
 
 # ===== NEW TESTS FOR FIXES =====
+
 
 def test_fix1_head_concat_not_mean():
     """Fix #1: Verify heads are concatenated (rearrange), not averaged.
@@ -259,16 +266,19 @@ def test_fix1_head_concat_not_mean():
     attn = PhysicsAttentionV3(C, heads=heads, dim_head=dim_head, slice_num=8)
 
     # Verify slice_linear3 shape: dim_head -> dim_head
-    assert attn.slice_linear3.in_features == dim_head, \
+    assert attn.slice_linear3.in_features == dim_head, (
         f"slice_linear3 in_features should be {dim_head}, got {attn.slice_linear3.in_features}"
-    assert attn.slice_linear3.out_features == dim_head, \
+    )
+    assert attn.slice_linear3.out_features == dim_head, (
         f"slice_linear3 out_features should be {dim_head}, got {attn.slice_linear3.out_features}"
+    )
 
     # Verify output shape is (B, N, dim) not (B, N, dim_head)
     x = torch.randn(B, N, C)
     out = attn(x)
-    assert out.shape == (B, N, C), \
-        f"Output should be (B,N,dim)={(B,N,C)}, got {out.shape}. Heads may be averaged instead of concatenated."
+    assert out.shape == (B, N, C), (
+        f"Output should be (B,N,dim)={(B, N, C)}, got {out.shape}. Heads may be averaged instead of concatenated."
+    )
 
     # Verify that different heads produce different contributions
     attn.eval()
@@ -278,6 +288,7 @@ def test_fix1_head_concat_not_mean():
         s = attn.slice_linear1(s_raw / (w.sum(dim=2)[..., None] + 1e-5))
         q, k, v = attn.to_q(s), attn.to_k(s), attn.to_v(s)
         from torch.nn.functional import scaled_dot_product_attention
+
         s_out = scaled_dot_product_attention(q, k, v)
         s_out = attn.slice_linear3(s_out)
         x_out = _deslice(s_out, w)  # B, H, N, dim_head
@@ -330,10 +341,10 @@ def test_fix3_mlp_chunking():
     out_dim = 4
 
     # Test with non-last block
-    block = Transolver3Block(num_heads=4, hidden_dim=C, dropout=0.0,
-                              slice_num=16, last_layer=False, mlp_chunk_size=50)
-    block_ref = Transolver3Block(num_heads=4, hidden_dim=C, dropout=0.0,
-                                  slice_num=16, last_layer=False, mlp_chunk_size=0)
+    block = Transolver3Block(num_heads=4, hidden_dim=C, dropout=0.0, slice_num=16, last_layer=False, mlp_chunk_size=50)
+    block_ref = Transolver3Block(
+        num_heads=4, hidden_dim=C, dropout=0.0, slice_num=16, last_layer=False, mlp_chunk_size=0
+    )
     # Copy weights
     block_ref.load_state_dict(block.state_dict())
     block.eval()
@@ -348,12 +359,12 @@ def test_fix3_mlp_chunking():
     assert diff < 1e-5, f"Chunked vs full MLP max diff: {diff}"
 
     # Test with last block
-    block_last = Transolver3Block(num_heads=4, hidden_dim=C, dropout=0.0,
-                                   slice_num=16, last_layer=True, out_dim=out_dim,
-                                   mlp_chunk_size=50)
-    block_last_ref = Transolver3Block(num_heads=4, hidden_dim=C, dropout=0.0,
-                                       slice_num=16, last_layer=True, out_dim=out_dim,
-                                       mlp_chunk_size=0)
+    block_last = Transolver3Block(
+        num_heads=4, hidden_dim=C, dropout=0.0, slice_num=16, last_layer=True, out_dim=out_dim, mlp_chunk_size=50
+    )
+    block_last_ref = Transolver3Block(
+        num_heads=4, hidden_dim=C, dropout=0.0, slice_num=16, last_layer=True, out_dim=out_dim, mlp_chunk_size=0
+    )
     block_last_ref.load_state_dict(block_last.state_dict())
     block_last.eval()
     block_last_ref.eval()
@@ -413,12 +424,10 @@ def test_fix4_streaming_cache():
         cache_full = model._cache_full(x, fx=None, T=None, num_tiles=0)
 
         # Chunked cache (with CPU offloading)
-        cache_chunked = model._cache_chunked(x, fx=None, T=None, num_tiles=0,
-                                              chunk_size=50)
+        cache_chunked = model._cache_chunked(x, fx=None, T=None, num_tiles=0, chunk_size=50)
 
     # Verify cache sizes match
-    assert len(cache_full) == len(cache_chunked), \
-        f"Cache lengths differ: {len(cache_full)} vs {len(cache_chunked)}"
+    assert len(cache_full) == len(cache_chunked), f"Cache lengths differ: {len(cache_full)} vs {len(cache_chunked)}"
 
     # Verify each layer's cached state matches
     for i, (cf, cc) in enumerate(zip(cache_full, cache_chunked)):
@@ -435,11 +444,10 @@ def test_fix4_streaming_cache():
     diff_out = (out_full - out_chunked).abs().max().item()
     assert diff_out < 1e-3, f"Decoded output diff: {diff_out}"
 
-    cache_diff = max(
-        (cf - cc.to(cf.device)).abs().max().item() for cf, cc in zip(cache_full, cache_chunked)
+    cache_diff = max((cf - cc.to(cf.device)).abs().max().item() for cf, cc in zip(cache_full, cache_chunked))
+    print(
+        f"PASS: Fix #4 — streaming cache matches full (cache max diff: {cache_diff:.2e}, output diff: {diff_out:.2e})"
     )
-    print(f"PASS: Fix #4 — streaming cache matches full "
-          f"(cache max diff: {cache_diff:.2e}, output diff: {diff_out:.2e})")
 
 
 def test_fix4_memory_pattern():
@@ -467,8 +475,7 @@ def test_fix4_memory_pattern():
     x = torch.randn(B, N, space_dim)
 
     with torch.no_grad():
-        cache = model._cache_chunked(x, fx=None, T=None, num_tiles=0,
-                                      chunk_size=25)
+        cache = model._cache_chunked(x, fx=None, T=None, num_tiles=0, chunk_size=25)
 
     # Cache should have one entry per layer
     assert len(cache) == 2, f"Expected 2 cache entries, got {len(cache)}"
@@ -508,7 +515,7 @@ def test_fix6_mixed_precision():
     target = torch.randn(B, N, out_dim)
 
     # Determine device type for autocast
-    device_type = 'cuda' if torch.cuda.is_available() else 'cpu'
+    device_type = "cuda" if torch.cuda.is_available() else "cpu"
 
     # Forward pass with autocast
     with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
@@ -525,8 +532,7 @@ def test_fix6_mixed_precision():
         with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
             engine = CachedInference(model, cache_chunk_size=30, decode_chunk_size=30)
             out_cached = engine.predict(x)
-            assert out_cached.shape == (B, N, out_dim), \
-                f"Autocast cached shape: {out_cached.shape}"
+            assert out_cached.shape == (B, N, out_dim), f"Autocast cached shape: {out_cached.shape}"
 
     print(f"PASS: Fix #6 — mixed precision works (device_type={device_type})")
 
@@ -549,7 +555,7 @@ def test_fix6_autocast_numerics():
     model.eval()
 
     x = torch.randn(B, N, space_dim)
-    device_type = 'cuda' if torch.cuda.is_available() else 'cpu'
+    device_type = "cuda" if torch.cuda.is_available() else "cpu"
 
     with torch.no_grad():
         with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
@@ -660,8 +666,14 @@ def test_tile_size_model():
 
     # Constructor-level tile_size
     model = Transolver3(
-        space_dim=space_dim, n_layers=2, n_hidden=64, n_head=4,
-        fun_dim=0, out_dim=out_dim, slice_num=16, mlp_ratio=1,
+        space_dim=space_dim,
+        n_layers=2,
+        n_hidden=64,
+        n_head=4,
+        fun_dim=0,
+        out_dim=out_dim,
+        slice_num=16,
+        mlp_ratio=1,
         tile_size=50,
     )
     model.eval()
@@ -695,19 +707,17 @@ def test_target_normalizer_fit():
     normalizer.fit(targets)
 
     # Check mean is close to 10, std close to 3
-    assert (normalizer.mean - 10.0).abs().max().item() < 0.5, \
+    assert (normalizer.mean - 10.0).abs().max().item() < 0.5, (
         f"Mean should be ~10, got {normalizer.mean.squeeze().tolist()}"
-    assert (normalizer.std - 3.0).abs().max().item() < 0.5, \
-        f"Std should be ~3, got {normalizer.std.squeeze().tolist()}"
+    )
+    assert (normalizer.std - 3.0).abs().max().item() < 0.5, f"Std should be ~3, got {normalizer.std.squeeze().tolist()}"
 
     # Encoded data should have ~zero mean, ~unit variance
     encoded = normalizer.encode(targets)
     enc_mean = encoded.mean(dim=(0, 1))
     enc_std = encoded.std(dim=(0, 1))
-    assert enc_mean.abs().max().item() < 0.1, \
-        f"Encoded mean should be ~0, got {enc_mean.tolist()}"
-    assert (enc_std - 1.0).abs().max().item() < 0.1, \
-        f"Encoded std should be ~1, got {enc_std.tolist()}"
+    assert enc_mean.abs().max().item() < 0.1, f"Encoded mean should be ~0, got {enc_mean.tolist()}"
+    assert (enc_std - 1.0).abs().max().item() < 0.1, f"Encoded std should be ~1, got {enc_std.tolist()}"
 
     # Decode(encode(x)) == x
     decoded = normalizer.decode(encoded)
@@ -729,7 +739,7 @@ def test_target_normalizer_incremental():
 
     # Incremental fit (simulate batches of 20)
     norm_inc = TargetNormalizer()
-    batches = [targets[i:i+20] for i in range(0, num_samples, 20)]
+    batches = [targets[i : i + 20] for i in range(0, num_samples, 20)]
     norm_inc.fit_incremental(iter(batches))
 
     mean_diff = (norm_full.mean - norm_inc.mean).abs().max().item()
@@ -790,11 +800,11 @@ def test_target_normalizer_device():
 
     # Should work on CPU
     encoded = normalizer.encode(targets)
-    assert encoded.device.type == 'cpu'
+    assert encoded.device.type == "cpu"
 
     # to() should move buffers
     normalizer.cpu()
-    assert normalizer.mean.device.type == 'cpu'
+    assert normalizer.mean.device.type == "cpu"
 
     print("PASS: TargetNormalizer device handling")
 
@@ -806,8 +816,14 @@ def test_train_step_with_normalizer():
     out_dim = 2
 
     model = Transolver3(
-        space_dim=space_dim, n_layers=2, n_hidden=32, n_head=4,
-        fun_dim=0, out_dim=out_dim, slice_num=8, mlp_ratio=1,
+        space_dim=space_dim,
+        n_layers=2,
+        n_hidden=32,
+        n_head=4,
+        fun_dim=0,
+        out_dim=out_dim,
+        slice_num=8,
+        mlp_ratio=1,
     )
 
     x = torch.randn(B, N, space_dim)
@@ -821,12 +837,10 @@ def test_train_step_with_normalizer():
     scheduler = create_scheduler(optimizer, total_steps=10)
 
     # Train step with normalizer
-    loss_with = train_step(model, x, None, target, optimizer, scheduler,
-                           normalizer=normalizer)
+    loss_with = train_step(model, x, None, target, optimizer, scheduler, normalizer=normalizer)
 
     # Train step without (for comparison — should also work)
-    loss_without = train_step(model, x, None, target, optimizer, scheduler,
-                              normalizer=None)
+    loss_without = train_step(model, x, None, target, optimizer, scheduler, normalizer=None)
 
     assert isinstance(loss_with, float) and loss_with > 0
     assert isinstance(loss_without, float) and loss_without > 0
@@ -841,8 +855,14 @@ def test_train_step_mixed_precision():
     out_dim = 2
 
     model = Transolver3(
-        space_dim=space_dim, n_layers=2, n_hidden=32, n_head=4,
-        fun_dim=0, out_dim=out_dim, slice_num=8, mlp_ratio=1,
+        space_dim=space_dim,
+        n_layers=2,
+        n_hidden=32,
+        n_head=4,
+        fun_dim=0,
+        out_dim=out_dim,
+        slice_num=8,
+        mlp_ratio=1,
     )
 
     x = torch.randn(B, N, space_dim)
@@ -854,13 +874,12 @@ def test_train_step_mixed_precision():
     device_type = next(model.parameters()).device.type
 
     # GradScaler: on CPU it's essentially a no-op but tests the code path
-    scaler = torch.amp.GradScaler(device=device_type, enabled=(device_type == 'cuda'))
+    scaler = torch.amp.GradScaler(device=device_type, enabled=(device_type == "cuda"))
 
     # Multiple steps to verify gradients flow correctly
     losses = []
     for _ in range(3):
-        loss = train_step(model, x, None, target, optimizer, scheduler,
-                          scaler=scaler)
+        loss = train_step(model, x, None, target, optimizer, scheduler, scaler=scaler)
         losses.append(loss)
 
     assert all(isinstance(v, float) and v > 0 for v in losses)
@@ -885,10 +904,8 @@ def test_input_normalizer_per_sample():
 
     # Each sample should be in [0, 1000]
     for b in range(B):
-        assert encoded[b].min().item() >= -1e-5, \
-            f"Sample {b} min={encoded[b].min().item()}, expected >= 0"
-        assert encoded[b].max().item() <= 1000.0 + 1e-5, \
-            f"Sample {b} max={encoded[b].max().item()}, expected <= 1000"
+        assert encoded[b].min().item() >= -1e-5, f"Sample {b} min={encoded[b].min().item()}, expected >= 0"
+        assert encoded[b].max().item() <= 1000.0 + 1e-5, f"Sample {b} max={encoded[b].max().item()}, expected <= 1000"
 
     # Min per sample should be ~0, max ~scale
     for b in range(B):
@@ -940,7 +957,7 @@ def test_input_normalizer_incremental():
 
     # Incremental fit
     norm_inc = InputNormalizer(scale=1.0, per_sample=False)
-    batches = [coords[i:i+10] for i in range(0, num_samples, 10)]
+    batches = [coords[i : i + 10] for i in range(0, num_samples, 10)]
     norm_inc.fit_incremental(iter(batches))
 
     min_diff = (norm_full.data_min - norm_inc.data_min).abs().max().item()
@@ -961,8 +978,7 @@ def test_input_normalizer_scale_factor():
         encoded = norm.encode(coords)
         # Min should be 0, max should be scale (per channel per sample)
         assert encoded.min().item() < 1e-5
-        assert abs(encoded.max().item() - scale) < 1e-3, \
-            f"scale={scale}: max={encoded.max().item()}"
+        assert abs(encoded.max().item() - scale) < 1e-3, f"scale={scale}: max={encoded.max().item()}"
 
     print("PASS: InputNormalizer scale factor works correctly")
 
@@ -994,46 +1010,57 @@ def test_input_normalizer_decode_per_sample_raises():
 
 # ===== PROFILING / BENCHMARKING TESTS =====
 
+
 def test_profile_memory_forward():
     """Test profile_memory returns valid MemoryResult for forward mode."""
     model = Transolver3(
-        space_dim=3, n_layers=2, n_hidden=32, n_head=4,
-        fun_dim=0, out_dim=2, slice_num=8, mlp_ratio=1,
+        space_dim=3,
+        n_layers=2,
+        n_hidden=32,
+        n_head=4,
+        fun_dim=0,
+        out_dim=2,
+        slice_num=8,
+        mlp_ratio=1,
     )
     model.eval()
 
     x = torch.randn(1, 100, 3)
 
-    result = profile_memory(model, x, mode='forward')
+    result = profile_memory(model, x, mode="forward")
     assert isinstance(result, MemoryResult)
     assert result.peak_mb > 0
     assert result.mesh_size == 100
-    assert result.config['mode'] == 'forward'
+    assert result.config["mode"] == "forward"
 
     # With tiling
-    result_tiled = profile_memory(model, x, tile_size=30, mode='forward')
+    result_tiled = profile_memory(model, x, tile_size=30, mode="forward")
     assert isinstance(result_tiled, MemoryResult)
     assert result_tiled.peak_mb > 0
 
-    print(f"PASS: profile_memory forward (no_tile={result.peak_mb:.1f}MB, "
-          f"tiled={result_tiled.peak_mb:.1f}MB)")
+    print(f"PASS: profile_memory forward (no_tile={result.peak_mb:.1f}MB, tiled={result_tiled.peak_mb:.1f}MB)")
 
 
 def test_profile_memory_cached():
     """Test profile_memory works for cached inference mode."""
     model = Transolver3(
-        space_dim=3, n_layers=2, n_hidden=32, n_head=4,
-        fun_dim=0, out_dim=2, slice_num=8, mlp_ratio=1,
+        space_dim=3,
+        n_layers=2,
+        n_hidden=32,
+        n_head=4,
+        fun_dim=0,
+        out_dim=2,
+        slice_num=8,
+        mlp_ratio=1,
     )
     model.eval()
 
     x = torch.randn(1, 100, 3)
 
-    result = profile_memory(model, x, mode='cached',
-                            cache_chunk_size=30, decode_chunk_size=30)
+    result = profile_memory(model, x, mode="cached", cache_chunk_size=30, decode_chunk_size=30)
     assert isinstance(result, MemoryResult)
     assert result.peak_mb > 0
-    assert result.config['mode'] == 'cached'
+    assert result.config["mode"] == "cached"
 
     print(f"PASS: profile_memory cached ({result.peak_mb:.1f}MB)")
 
@@ -1041,39 +1068,50 @@ def test_profile_memory_cached():
 def test_profile_latency():
     """Test profile_latency returns valid LatencyResult."""
     model = Transolver3(
-        space_dim=3, n_layers=2, n_hidden=32, n_head=4,
-        fun_dim=0, out_dim=2, slice_num=8, mlp_ratio=1,
+        space_dim=3,
+        n_layers=2,
+        n_hidden=32,
+        n_head=4,
+        fun_dim=0,
+        out_dim=2,
+        slice_num=8,
+        mlp_ratio=1,
     )
     model.eval()
 
     x = torch.randn(1, 100, 3)
 
-    result = profile_latency(model, x, mode='forward',
-                             num_warmup=1, num_runs=3)
+    result = profile_latency(model, x, mode="forward", num_warmup=1, num_runs=3)
     assert isinstance(result, LatencyResult)
     assert result.mean_ms > 0
     assert result.num_runs == 3
     assert result.mesh_size == 100
 
-    print(f"PASS: profile_latency (mean={result.mean_ms:.1f}ms, "
-          f"std={result.std_ms:.1f}ms)")
+    print(f"PASS: profile_latency (mean={result.mean_ms:.1f}ms, std={result.std_ms:.1f}ms)")
 
 
 def test_benchmark_scaling():
     """Test benchmark_scaling produces structured results across mesh sizes."""
     model = Transolver3(
-        space_dim=3, n_layers=2, n_hidden=32, n_head=4,
-        fun_dim=0, out_dim=2, slice_num=8, mlp_ratio=1,
+        space_dim=3,
+        n_layers=2,
+        n_hidden=32,
+        n_head=4,
+        fun_dim=0,
+        out_dim=2,
+        slice_num=8,
+        mlp_ratio=1,
     )
     model.eval()
 
     configs = [
-        {'label': 'no_tiling', 'num_tiles': 0},
-        {'label': 'tile_50', 'tile_size': 50},
+        {"label": "no_tiling", "num_tiles": 0},
+        {"label": "tile_50", "tile_size": 50},
     ]
 
     results = benchmark_scaling(
-        model, space_dim=3,
+        model,
+        space_dim=3,
         mesh_sizes=[50, 100, 200],
         configs=configs,
         measure_memory=True,
@@ -1081,20 +1119,20 @@ def test_benchmark_scaling():
         num_latency_runs=2,
     )
 
-    assert results['mesh_sizes'] == [50, 100, 200]
-    assert len(results['configs']) == 2
-    assert len(results['memory']) == 2  # 2 configs
-    assert len(results['memory'][0]) == 3  # 3 mesh sizes
-    assert len(results['latency']) == 2
-    assert len(results['latency'][0]) == 3
+    assert results["mesh_sizes"] == [50, 100, 200]
+    assert len(results["configs"]) == 2
+    assert len(results["memory"]) == 2  # 2 configs
+    assert len(results["memory"][0]) == 3  # 3 mesh sizes
+    assert len(results["latency"]) == 2
+    assert len(results["latency"][0]) == 3
 
     # All results should be valid
-    for row in results['memory']:
+    for row in results["memory"]:
         for mr in row:
             assert isinstance(mr, MemoryResult)
             assert mr.peak_mb > 0
 
-    for row in results['latency']:
+    for row in results["latency"]:
         for lr in row:
             assert isinstance(lr, LatencyResult)
             assert lr.mean_ms > 0
@@ -1105,25 +1143,32 @@ def test_benchmark_scaling():
 def test_format_benchmark_table():
     """Test format_benchmark_table produces readable output."""
     model = Transolver3(
-        space_dim=3, n_layers=2, n_hidden=32, n_head=4,
-        fun_dim=0, out_dim=2, slice_num=8, mlp_ratio=1,
+        space_dim=3,
+        n_layers=2,
+        n_hidden=32,
+        n_head=4,
+        fun_dim=0,
+        out_dim=2,
+        slice_num=8,
+        mlp_ratio=1,
     )
     model.eval()
 
     results = benchmark_scaling(
-        model, space_dim=3,
+        model,
+        space_dim=3,
         mesh_sizes=[50, 100],
-        configs=[{'label': 'baseline', 'num_tiles': 0}],
+        configs=[{"label": "baseline", "num_tiles": 0}],
         measure_latency=False,
         num_latency_runs=1,
     )
 
     table = format_benchmark_table(results)
     assert isinstance(table, str)
-    assert 'Memory' in table
-    assert 'baseline' in table
-    assert 'N=50' in table
-    assert 'N=100' in table
+    assert "Memory" in table
+    assert "baseline" in table
+    assert "N=50" in table
+    assert "N=100" in table
 
     print(f"PASS: format_benchmark_table\n{table}")
 
@@ -1136,8 +1181,14 @@ def test_tiling_reduces_memory_relative():
     profiling infrastructure works end-to-end and tiled memory is finite.
     """
     model = Transolver3(
-        space_dim=3, n_layers=2, n_hidden=64, n_head=4,
-        fun_dim=0, out_dim=2, slice_num=16, mlp_ratio=1,
+        space_dim=3,
+        n_layers=2,
+        n_hidden=64,
+        n_head=4,
+        fun_dim=0,
+        out_dim=2,
+        slice_num=16,
+        mlp_ratio=1,
     )
     model.eval()
 
@@ -1149,14 +1200,13 @@ def test_tiling_reduces_memory_relative():
     # Both should produce valid results
     assert mem_no_tile.peak_mb > 0
     assert mem_tiled.peak_mb > 0
-    assert mem_no_tile.peak_mb < float('inf')
-    assert mem_tiled.peak_mb < float('inf')
+    assert mem_no_tile.peak_mb < float("inf")
+    assert mem_tiled.peak_mb < float("inf")
 
-    print(f"PASS: tiling memory comparison (no_tile={mem_no_tile.peak_mb:.1f}MB, "
-          f"tiled={mem_tiled.peak_mb:.1f}MB)")
+    print(f"PASS: tiling memory comparison (no_tile={mem_no_tile.peak_mb:.1f}MB, tiled={mem_tiled.peak_mb:.1f}MB)")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     print("=" * 60)
     print("Transolver-3 Tests")
     print("=" * 60)

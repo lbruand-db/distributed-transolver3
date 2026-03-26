@@ -45,10 +45,18 @@ class DrivAerMLDataset(Dataset):
         num_shards: total number of shards. None = no sharding.
     """
 
-    def __init__(self, data_dir, split='train', field='surface',
-                 subset_size=400000, normalize_coords=True,
-                 coord_scale=1000.0, lazy_load=True,
-                 shard_id=None, num_shards=None):
+    def __init__(
+        self,
+        data_dir,
+        split="train",
+        field="surface",
+        subset_size=400000,
+        normalize_coords=True,
+        coord_scale=1000.0,
+        lazy_load=True,
+        shard_id=None,
+        num_shards=None,
+    ):
         self.data_dir = data_dir
         self.split = split
         self.field = field
@@ -59,14 +67,12 @@ class DrivAerMLDataset(Dataset):
         self.shard_id = shard_id
         self.num_shards = num_shards
 
-        split_file = os.path.join(data_dir, f'{split}.txt')
+        split_file = os.path.join(data_dir, f"{split}.txt")
         if os.path.exists(split_file):
             with open(split_file) as f:
                 self.samples = [line.strip() for line in f if line.strip()]
         else:
-            self.samples = sorted([
-                f for f in os.listdir(data_dir) if f.endswith(('.npz', '.h5'))
-            ])
+            self.samples = sorted([f for f in os.listdir(data_dir) if f.endswith((".npz", ".h5"))])
 
     def __len__(self):
         return len(self.samples)
@@ -82,6 +88,7 @@ class DrivAerMLDataset(Dataset):
         if self.shard_id is None or self.num_shards is None:
             return 0, total_points
         from transolver3.distributed import mesh_shard_range
+
         return mesh_shard_range(total_points, self.shard_id, self.num_shards)
 
     def _load_array_shard(self, data, key):
@@ -100,7 +107,7 @@ class DrivAerMLDataset(Dataset):
         N = tensors[0].shape[0]
         if N <= self.subset_size:
             return tensors
-        indices = torch.randperm(N)[:self.subset_size]
+        indices = torch.randperm(N)[: self.subset_size]
         return tuple(t[indices] for t in tensors)
 
     def __getitem__(self, idx):
@@ -108,22 +115,20 @@ class DrivAerMLDataset(Dataset):
 
         # For very large files, use memory-mapped loading
         try:
-            data = np.load(sample_path, allow_pickle=True, mmap_mode='r')
+            data = np.load(sample_path, allow_pickle=True, mmap_mode="r")
         except ValueError:
             data = np.load(sample_path, allow_pickle=True)
 
-        params = torch.tensor(np.array(data['params']), dtype=torch.float32)
-        result = {'params': params, 'sample_id': self.samples[idx]}
+        params = torch.tensor(np.array(data["params"]), dtype=torch.float32)
+        result = {"params": params, "sample_id": self.samples[idx]}
 
-        if self.field in ('surface', 'both'):
-            coords = self._load_array_shard(data, 'surface_coords')
-            normals = self._load_array_shard(data, 'surface_normals')
-            pressure = self._load_array_shard(data, 'surface_pressure')
-            shear = self._load_array_shard(data, 'surface_wall_shear')
+        if self.field in ("surface", "both"):
+            coords = self._load_array_shard(data, "surface_coords")
+            normals = self._load_array_shard(data, "surface_normals")
+            pressure = self._load_array_shard(data, "surface_pressure")
+            shear = self._load_array_shard(data, "surface_wall_shear")
 
-            coords, normals, pressure, shear = self._subsample(
-                coords, normals, pressure, shear
-            )
+            coords, normals, pressure, shear = self._subsample(coords, normals, pressure, shear)
             if self.normalize_coords:
                 coords = self._normalize_coords(coords)
 
@@ -132,18 +137,16 @@ class DrivAerMLDataset(Dataset):
             x_surface = torch.cat([coords, normals, p_broadcast], dim=-1)
             target_surface = torch.cat([pressure, shear], dim=-1)
 
-            result['surface_x'] = x_surface
-            result['surface_pos'] = coords
-            result['surface_target'] = target_surface
+            result["surface_x"] = x_surface
+            result["surface_pos"] = coords
+            result["surface_target"] = target_surface
 
-        if self.field in ('volume', 'both'):
-            coords = self._load_array_shard(data, 'volume_coords')
-            velocity = self._load_array_shard(data, 'volume_velocity')
-            pressure = self._load_array_shard(data, 'volume_pressure')
+        if self.field in ("volume", "both"):
+            coords = self._load_array_shard(data, "volume_coords")
+            velocity = self._load_array_shard(data, "volume_velocity")
+            pressure = self._load_array_shard(data, "volume_pressure")
 
-            coords, velocity, pressure = self._subsample(
-                coords, velocity, pressure
-            )
+            coords, velocity, pressure = self._subsample(coords, velocity, pressure)
             if self.normalize_coords:
                 coords = self._normalize_coords(coords)
 
@@ -152,8 +155,8 @@ class DrivAerMLDataset(Dataset):
             x_volume = torch.cat([coords, p_broadcast], dim=-1)
             target_volume = torch.cat([velocity, pressure], dim=-1)
 
-            result['volume_x'] = x_volume
-            result['volume_pos'] = coords
-            result['volume_target'] = target_volume
+            result["volume_x"] = x_volume
+            result["volume_pos"] = coords
+            result["volume_target"] = target_volume
 
         return result
