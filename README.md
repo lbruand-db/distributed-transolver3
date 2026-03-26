@@ -5,6 +5,7 @@
 [![ty](https://img.shields.io/badge/type--checked-ty-blue)](https://github.com/astral-sh/ty)
 [![pytest](https://img.shields.io/badge/tests-pytest-green)](https://docs.pytest.org/)
 [![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/release/python-3120/)
+[![Built with Claude Code](https://img.shields.io/badge/Built%20with-Claude%20Code-blueviolet?logo=anthropic)](https://claude.ai/code)
 
 Scaling Transformer Solvers to Industrial-Scale Geometries (100M+ cells).
 
