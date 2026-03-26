@@ -36,6 +36,14 @@ from transolver3.distributed import (
 )
 from dataset.drivaer_ml import DrivAerMLDataset
 
+# Optional MLflow integration (guarded import)
+try:
+    import mlflow
+    from transolver3.mlflow_utils import log_training_run, log_model_with_signature
+    _HAS_MLFLOW = True
+except ImportError:
+    _HAS_MLFLOW = False
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Distributed Transolver-3 on DrivAerML')
@@ -277,6 +285,25 @@ def main():
     log(f"Training: {args.epochs} epochs, lr={scaled_lr:.1e} (scaled {world_size}x)")
     log(f"Tiles: {args.num_tiles}, Cache chunks: {args.cache_chunk_size:,}")
 
+    # --- MLflow tracking (rank 0 only) ---
+    mlflow_run = None
+    if _HAS_MLFLOW and is_main_process():
+        mlflow_run = mlflow.start_run(run_name=f"drivaer-{args.field}-{args.n_layers}L")
+        log_training_run(model, {
+            "field": args.field,
+            "epochs": args.epochs,
+            "lr": scaled_lr,
+            "weight_decay": args.weight_decay,
+            "subset_size": args.subset_size,
+            "n_layers": args.n_layers,
+            "n_hidden": args.n_hidden,
+            "n_head": args.n_head,
+            "slice_num": args.slice_num,
+            "num_tiles": args.num_tiles,
+            "world_size": world_size,
+            "shard_mesh": shard_mesh,
+        })
+
     best_error = float('inf')
     for epoch in range(args.epochs):
         train_sampler.set_epoch(epoch)  # shuffle differently each epoch
@@ -315,7 +342,24 @@ def main():
             log(f"Epoch {epoch+1}/{args.epochs} | "
                 f"train_loss={train_loss:.6f} | time={t1-t0:.1f}s")
 
+        # Log metrics to MLflow
+        if mlflow_run and is_main_process():
+            mlflow.log_metric("train_loss", train_loss, step=epoch)
+            mlflow.log_metric("epoch_time_s", t1 - t0, step=epoch)
+
     log(f"\nBest test relative L2 error: {best_error:.4f} ({best_error*100:.2f}%)")
+
+    # Log best model to MLflow
+    if mlflow_run and is_main_process():
+        mlflow.log_metric("best_test_l2", best_error)
+        best_path = os.path.join(args.save_dir, "best_model.pt")
+        if os.path.exists(best_path):
+            raw_model = model.module if hasattr(model, "module") else model
+            raw_model.load_state_dict(torch.load(best_path, map_location=device))
+            sample_x = torch.randn(1, 100, space_dim, device=device)
+            log_model_with_signature(raw_model, sample_x)
+        mlflow.end_run()
+
     cleanup()
 
 
