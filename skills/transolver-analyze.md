@@ -324,11 +324,24 @@ with mlflow.start_run(run_name="gpu-benchmark"):
 ### Run the DAB GPU benchmark
 
 ```bash
+# Deploy to a GPU target and run the benchmark job
 databricks bundle deploy -t a10g
 databricks bundle run gpu_memory_benchmark
+
+# On a larger GPU for higher mesh sizes:
+databricks bundle deploy -t a100_40
+databricks bundle run gpu_memory_benchmark -t a100_40
 ```
 
-This sweeps mesh sizes from 1K to 8M points on a single GPU and logs all results to MLflow.
+This sweeps mesh sizes from 1K to 8M points on a single GPU and logs all results to MLflow. The job uses the `${node_type_id}` variable from the target, so `a10g` runs on `g5.xlarge` and `a100_40` runs on `p4d.24xlarge`.
+
+You can also run the distributed sharding validation:
+
+```bash
+databricks bundle run distributed_sharded_test -t a10g
+```
+
+This spawns a `g5.12xlarge` (4x A10G) cluster and verifies that 2-GPU sharded cache + decode produces zero numerical difference vs single-GPU.
 
 ---
 

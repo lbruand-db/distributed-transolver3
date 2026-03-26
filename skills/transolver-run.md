@@ -233,7 +233,7 @@ full_pred = engine.predict(x_local, gather=True)  # gathered on all ranks
 
 ## DAB deployment (production workflows)
 
-### Available targets
+### GPU targets (for benchmarks and one-off runs)
 
 | Target | Instance | GPU | VRAM | Use case |
 |--------|----------|-----|------|----------|
@@ -241,25 +241,140 @@ full_pred = engine.predict(x_local, gather=True)  # gathered on all ranks
 | `a100_40` | p4d.24xlarge | 8x A100 | 320 GB | Multi-GPU training |
 | `a100_80` | p4de.24xlarge | 8x A100-80 | 640 GB | Full-scale DrivAerML |
 
+### Environment targets (for the promotion pipeline)
+
+| Target | Catalog | Schema | Endpoint | GPU | Purpose |
+|--------|---------|--------|----------|-----|---------|
+| `dev` | `dev` | `transolver3` | `transolver3-serving-dev` | A10G | Development iteration |
+| `staging` | `staging` | `transolver3` | `transolver3-serving-staging` | 8x A100 40GB | Validation before prod |
+| `prod` | `prod` | `transolver3` | `transolver3-serving-prod` | 8x A100 80GB | Production serving |
+
+The environment targets wire catalog/schema/endpoint names automatically — the same code runs across dev/staging/prod with different data isolation.
+
+### DAB variables
+
+All jobs use these configurable variables (set in `databricks.yml`, overridable per target or at deploy time):
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `data_volume_path` | `/Volumes/ml/transolver3/meshes` | UC Volume path to `.npz` mesh files |
+| `catalog` | `ml` | Unity Catalog name for Delta tables and model registry |
+| `schema` | `transolver3` | UC schema name |
+| `model_name` | `transolver3` | Model name in UC Model Registry |
+| `endpoint_name` | `transolver3-serving` | Serving endpoint name |
+| `gpu_type` | `a10g` | GPU profile label |
+| `node_type_id` | `g5.xlarge` | AWS instance type |
+
+Override variables at deploy time:
+
+```bash
+# Point to your own data volume
+databricks bundle deploy -t dev \
+  --var data_volume_path=/Volumes/dev/transolver3/my_meshes
+
+# Use a different model name
+databricks bundle deploy -t staging \
+  --var model_name=transolver3_v2
+```
+
 ### Deploy and run
 
 ```bash
+# Deploy to a GPU target for benchmarking
 databricks bundle deploy -t a10g
 
 # Available jobs:
 databricks bundle run gpu_memory_benchmark     # Single-GPU memory sweep
 databricks bundle run distributed_sharded_test # 2-GPU sharding validation
 databricks bundle run training_workflow        # Full 5-task pipeline
+
+# Deploy to an environment for the full pipeline
+databricks bundle deploy -t dev
+databricks bundle run training_workflow -t dev
 ```
 
 ### Full training workflow (5 tasks)
 
-The DAB `training_workflow` runs this automated pipeline:
-1. **Preprocess** — Register mesh metadata in Delta, compute normalization stats via Spark
-2. **Train** — Distributed training via TorchDistributor on GPU cluster
-3. **Evaluate** — Cached inference on validation data, log metrics to MLflow
-4. **Register** — Log model + normalizers to Unity Catalog Model Registry
-5. **Deploy** — Create/update Model Serving endpoint
+The DAB `training_workflow` (`resources/training_workflow.yml`) runs 5 sequential tasks. Each task creates its own cluster with the right GPU type and libraries (`einops`, `timm`, `mlflow`, `databricks-sdk`).
+
+1. **preprocess** (`scripts/preprocess.py`)
+   - Cluster: `i3.xlarge` (CPU, no GPU needed)
+   - Params: `--data_dir ${data_volume_path} --catalog ${catalog} --schema ${schema}`
+   - Registers mesh metadata in `${catalog}.${schema}.mesh_metadata`
+   - Computes normalization stats in `${catalog}.${schema}.mesh_stats`
+
+2. **train** (`Industrial-Scale-Benchmarks/exp_drivaer_ml_distributed.py`)
+   - Cluster: `${node_type_id}` (GPU), 8 GPUs via `spark.task.resource.gpu.amount: "8"`
+   - Params: `--data_dir ${data_volume_path} --use-distributor --num-gpus 8 --epochs 500`
+   - Uses TorchDistributor with mesh-sharded DDP
+   - Logs metrics to MLflow throughout
+   - Outputs: checkpoint to `./checkpoints/drivaer_ml_distributed/best_model.pt`
+
+3. **evaluate** (`exp_drivaer_ml_distributed.py --eval_only`)
+   - Cluster: `${node_type_id}` (GPU)
+   - Params: `--data_dir ${data_volume_path} --eval_only --checkpoint ./checkpoints/.../best_model.pt`
+   - Runs cached inference on validation data
+   - Logs eval metrics (relative L2, per-channel errors) to MLflow
+
+4. **register** (`scripts/register_model.py`)
+   - Cluster: `i3.xlarge` (CPU)
+   - Params: `--catalog ${catalog} --schema ${schema} --model_name ${model_name}`
+   - Wraps model + normalizers in `TransolverPyfunc`
+   - Registers in UC as `${catalog}.${schema}.${model_name}`
+
+5. **deploy** (`scripts/deploy_endpoint.py`)
+   - Cluster: `i3.xlarge` (CPU)
+   - Params: `--catalog ${catalog} --schema ${schema} --model_name ${model_name} --endpoint_name ${endpoint_name}`
+   - Creates/updates serving endpoint with scale-to-zero
+
+### Customizing training parameters
+
+The train task passes parameters directly to `exp_drivaer_ml_distributed.py`. To change epochs, learning rate, or model architecture, edit `resources/training_workflow.yml`:
+
+```yaml
+# In resources/training_workflow.yml, under the "train" task:
+parameters:
+  - "--data_dir"
+  - "${var.data_volume_path}"
+  - "--use-distributor"
+  - "--num-gpus"
+  - "8"
+  - "--epochs"
+  - "200"          # change from 500
+  - "--lr"
+  - "5e-4"         # add custom learning rate
+  - "--n-layers"
+  - "12"           # smaller model for faster iteration
+```
+
+### Monitoring DAB job runs
+
+After `databricks bundle run`, the CLI prints a run URL. In the Databricks UI:
+
+- **Workflow Runs** page: see the 5-task DAG, click each task for logs
+- **MLflow Experiments** (`/Shared/transolver3-experiments`): training curves, eval metrics
+- **Serving Endpoints** page: endpoint status, latency, request logs
+- **Unity Catalog**: browse `${catalog}.${schema}` for Delta tables and registered models
+
+### Serving endpoint resource
+
+The DAB also declares a serving endpoint in `resources/serving_endpoint.yml`. This gets created/updated on `bundle deploy`:
+
+```yaml
+# resources/serving_endpoint.yml
+resources:
+  serving_endpoints:
+    transolver3_endpoint:
+      name: "${var.endpoint_name}"
+      config:
+        served_entities:
+          - entity_name: "${var.catalog}.${var.schema}.${var.model_name}"
+            entity_version: "1"
+            workload_size: "Small"
+            scale_to_zero_enabled: true
+```
+
+This means `databricks bundle deploy -t prod` automatically creates/updates `transolver3-serving-prod` pointing to `prod.transolver3.transolver3`.
 
 ---
 
@@ -315,7 +430,11 @@ if result.returncode != 0:
 | Loss stuck / not decreasing | LR too low or data not normalized | Check LR schedule, apply `TargetNormalizer` |
 | Loss is NaN | Numerical instability | Enable mixed precision (`scaler`), check data for NaN |
 | Slow training | No tiling on large mesh | Set `tile_size=100_000` |
-| `RuntimeError: NCCL` | Distributed setup issue | Check cluster has multi-GPU instance type |
-| `ModuleNotFoundError: transolver3` | Package not installed on cluster | Add `%pip install` cell or cluster init script |
-| DAB deploy fails | Not authenticated | Run `databricks configure --token` |
-| Job fails on wrong instance | Target mismatch | Check `databricks bundle deploy -t <target>` matches your needs |
+| `RuntimeError: NCCL` | Distributed setup issue | Check cluster has multi-GPU instance type (e.g., `p4d.24xlarge`) |
+| `ModuleNotFoundError: transolver3` | Package not installed on cluster | Add `%pip install` cell or check `libraries:` in `resources/*.yml` |
+| `databricks bundle deploy` fails | Not authenticated | Run `databricks configure --token` |
+| `Error: variable not set` | Missing variable override | Pass with `--var key=value` or check `databricks.yml` defaults |
+| Job fails on wrong GPU | Target mismatch | Use `-t a100_40` or `-t prod` to pick the right instance type |
+| Train task can't find data | Wrong `data_volume_path` | Override: `--var data_volume_path=/Volumes/dev/transolver3/data` |
+| Wrong catalog in job output | Using GPU target not env target | Use `-t dev`/`-t staging`/`-t prod` which set catalog/schema automatically |
+| Preprocess task fails | No `.npz` files in volume | Upload data first: `dbutils.fs.cp("file:/tmp/mesh.npz", "/Volumes/...")` |
