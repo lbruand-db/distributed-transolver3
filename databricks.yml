@@ -11,8 +11,24 @@ variables:
   node_type_id:
     description: "AWS instance type for the GPU cluster"
     default: "g5.xlarge"
+  catalog:
+    description: "Unity Catalog name"
+    default: "ml"
+  schema:
+    description: "UC schema name"
+    default: "transolver3"
+  data_volume_path:
+    description: "UC Volume path to mesh data (e.g., /Volumes/ml/transolver3/meshes)"
+    default: "/Volumes/ml/transolver3/meshes"
+  model_name:
+    description: "Model name in UC Model Registry"
+    default: "transolver3"
+  endpoint_name:
+    description: "Serving endpoint name"
+    default: "transolver3-serving"
 
 targets:
+  # --- GPU profiles (benchmarks & single runs) ---
   a10g:
     default: true
     workspace:
@@ -34,3 +50,34 @@ targets:
     variables:
       gpu_type: "a100_80"
       node_type_id: "p4de.24xlarge"
+
+  # --- Pipeline environments ---
+  dev:
+    workspace:
+      host: https://e2-demo-field-eng.cloud.databricks.com/
+    variables:
+      gpu_type: "a10g"
+      node_type_id: "g5.xlarge"
+      catalog: "dev"
+      schema: "transolver3"
+      endpoint_name: "transolver3-serving-dev"
+
+  staging:
+    workspace:
+      host: https://e2-demo-field-eng.cloud.databricks.com/
+    variables:
+      gpu_type: "a100_40"
+      node_type_id: "p4d.24xlarge"
+      catalog: "staging"
+      schema: "transolver3"
+      endpoint_name: "transolver3-serving-staging"
+
+  prod:
+    workspace:
+      host: https://e2-demo-field-eng.cloud.databricks.com/
+    variables:
+      gpu_type: "a100_80"
+      node_type_id: "p4de.24xlarge"
+      catalog: "prod"
+      schema: "transolver3"
+      endpoint_name: "transolver3-serving-prod"

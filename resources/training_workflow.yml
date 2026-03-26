@@ -1,0 +1,142 @@
+resources:
+  jobs:
+    transolver3_training_pipeline:
+      name: "[${bundle.target}] Transolver-3 Training Pipeline"
+
+      tasks:
+        - task_key: "preprocess"
+          description: "Compute mesh statistics and register metadata in Delta"
+          spark_python_task:
+            python_file: ../scripts/preprocess.py
+            parameters:
+              - "--data_dir"
+              - "${var.data_volume_path}"
+              - "--catalog"
+              - "${var.catalog}"
+              - "--schema"
+              - "${var.schema}"
+          new_cluster:
+            spark_version: "15.4.x-gpu-ml-scala2.12"
+            node_type_id: "i3.xlarge"
+            num_workers: 0
+            spark_conf:
+              spark.databricks.cluster.profile: "singleNode"
+              spark.master: "local[*]"
+          libraries:
+            - pypi:
+                package: "einops>=0.7"
+            - pypi:
+                package: "timm>=1.0"
+
+        - task_key: "train"
+          depends_on:
+            - task_key: "preprocess"
+          description: "Distributed mesh-sharded training with TorchDistributor"
+          spark_python_task:
+            python_file: ../Industrial-Scale-Benchmarks/exp_drivaer_ml_distributed.py
+            parameters:
+              - "--data_dir"
+              - "${var.data_volume_path}"
+              - "--use-distributor"
+              - "--num-gpus"
+              - "8"
+              - "--epochs"
+              - "500"
+          new_cluster:
+            spark_version: "15.4.x-gpu-ml-scala2.12"
+            node_type_id: ${var.node_type_id}
+            num_workers: 0
+            spark_conf:
+              spark.databricks.cluster.profile: "singleNode"
+              spark.master: "local[*]"
+              spark.task.resource.gpu.amount: "8"
+            custom_tags:
+              ResourceClass: "SingleNode"
+          libraries:
+            - pypi:
+                package: "einops>=0.7"
+            - pypi:
+                package: "timm>=1.0"
+            - pypi:
+                package: "mlflow>=2.10"
+
+        - task_key: "evaluate"
+          depends_on:
+            - task_key: "train"
+          description: "Evaluate trained model on test set"
+          spark_python_task:
+            python_file: ../Industrial-Scale-Benchmarks/exp_drivaer_ml_distributed.py
+            parameters:
+              - "--data_dir"
+              - "${var.data_volume_path}"
+              - "--eval_only"
+              - "--checkpoint"
+              - "./checkpoints/drivaer_ml_distributed/best_model.pt"
+          new_cluster:
+            spark_version: "15.4.x-gpu-ml-scala2.12"
+            node_type_id: ${var.node_type_id}
+            num_workers: 0
+            spark_conf:
+              spark.databricks.cluster.profile: "singleNode"
+              spark.master: "local[*]"
+            custom_tags:
+              ResourceClass: "SingleNode"
+          libraries:
+            - pypi:
+                package: "einops>=0.7"
+            - pypi:
+                package: "timm>=1.0"
+
+        - task_key: "register"
+          depends_on:
+            - task_key: "evaluate"
+          description: "Register trained model in UC Model Registry"
+          spark_python_task:
+            python_file: ../scripts/register_model.py
+            parameters:
+              - "--catalog"
+              - "${var.catalog}"
+              - "--schema"
+              - "${var.schema}"
+              - "--model_name"
+              - "${var.model_name}"
+          new_cluster:
+            spark_version: "15.4.x-gpu-ml-scala2.12"
+            node_type_id: "i3.xlarge"
+            num_workers: 0
+            spark_conf:
+              spark.databricks.cluster.profile: "singleNode"
+              spark.master: "local[*]"
+          libraries:
+            - pypi:
+                package: "einops>=0.7"
+            - pypi:
+                package: "timm>=1.0"
+            - pypi:
+                package: "mlflow>=2.10"
+
+        - task_key: "deploy"
+          depends_on:
+            - task_key: "register"
+          description: "Deploy model to serving endpoint"
+          spark_python_task:
+            python_file: ../scripts/deploy_endpoint.py
+            parameters:
+              - "--catalog"
+              - "${var.catalog}"
+              - "--schema"
+              - "${var.schema}"
+              - "--model_name"
+              - "${var.model_name}"
+              - "--endpoint_name"
+              - "${var.endpoint_name}"
+          new_cluster:
+            spark_version: "15.4.x-gpu-ml-scala2.12"
+            node_type_id: "i3.xlarge"
+            num_workers: 0
+            spark_conf:
+              spark.databricks.cluster.profile: "singleNode"
+              spark.master: "local[*]"
+          libraries:
+            - pypi:
+                package: "databricks-sdk>=0.20"
