@@ -1,4 +1,4 @@
-# Transolver-3
+# Mesh-Sharded Distributed Transolver-3
 
 [![CI](https://github.com/lbruand-db/distributed-transolver3/actions/workflows/ci.yml/badge.svg)](https://github.com/lbruand-db/distributed-transolver3/actions/workflows/ci.yml)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
