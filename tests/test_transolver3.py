@@ -215,6 +215,40 @@ def test_cached_model_inference():
     print(f"PASS: cached model inference (shape match, max diff: {diff:.2e})")
 
 
+def test_chunked_decode_matches_unchunked():
+    """Chunked decode (small decode_chunk_size) matches unchunked decode."""
+    B, N = 1, 200
+    space_dim = 3
+    out_dim = 2
+
+    model = Transolver3(
+        space_dim=space_dim,
+        n_layers=3,
+        n_hidden=64,
+        n_head=4,
+        fun_dim=0,
+        out_dim=out_dim,
+        slice_num=16,
+        mlp_ratio=1,
+    )
+    model.eval()
+    x = torch.randn(B, N, space_dim)
+
+    with torch.no_grad():
+        # Unchunked: decode_chunk_size >= N so no chunking
+        engine_full = CachedInference(model, cache_chunk_size=50, decode_chunk_size=N)
+        cache = engine_full.build_cache(x)
+        pred_full = engine_full.decode(x, cache)
+
+        # Chunked: small decode_chunk_size forces the loop path
+        engine_chunked = CachedInference(model, cache_chunk_size=50, decode_chunk_size=37)
+        pred_chunked = engine_chunked.decode(x, cache)
+
+    assert pred_full.shape == pred_chunked.shape
+    diff = (pred_full - pred_chunked).abs().max().item()
+    assert diff < 1e-5, f"Chunked decode differs from unchunked by {diff}"
+
+
 def test_sampler():
     """Test AmortizedMeshSampler."""
     sampler = AmortizedMeshSampler(subset_size=100, seed=42)

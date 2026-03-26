@@ -130,6 +130,44 @@ def test_pyfunc_predict_2d_input(small_model, model_config):
     assert result.shape == (1, 50, 1)
 
 
+def test_pyfunc_predict_dict_input(small_model, model_config):
+    """TransolverPyfunc predict works with dict input containing a list."""
+    from transolver3.serving import TransolverPyfunc
+
+    pyfunc = TransolverPyfunc()
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        artifacts = _save_model_artifacts(small_model, model_config, tmpdir)
+        context = MockContext(artifacts)
+        pyfunc.load_context(context)
+
+    # Dict with a plain list (not numpy array)
+    coords = np.random.randn(1, 30, 3).tolist()
+    result = pyfunc.predict(None, {"coordinates": coords})
+
+    assert result.shape == (1, 30, 1)
+    assert result.dtype == np.float32
+
+
+def test_pyfunc_predict_dataframe_input(small_model, model_config):
+    """TransolverPyfunc predict works with pandas DataFrame input."""
+    pd = pytest.importorskip("pandas", reason="pandas required")
+    from transolver3.serving import TransolverPyfunc
+
+    pyfunc = TransolverPyfunc()
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        artifacts = _save_model_artifacts(small_model, model_config, tmpdir)
+        context = MockContext(artifacts)
+        pyfunc.load_context(context)
+
+    coords = np.random.randn(1, 20, 3).astype(np.float32)
+    df = pd.DataFrame({"coordinates": [json.dumps(coords.tolist())]})
+    result = pyfunc.predict(None, df)
+
+    assert result.shape == (1, 20, 1)
+
+
 def test_register_serving_model():
     """register_serving_model requires mlflow (import guard test)."""
     mlflow = pytest.importorskip("mlflow", reason="mlflow required")  # noqa: F841
