@@ -75,6 +75,10 @@ def parse_args():
                              'Each GPU processes its mesh shard; cache accumulators '
                              'are all-reduced (~514 KB/layer). Required for meshes '
                              'that do not fit in single-node memory.')
+    parser.add_argument('--use-distributor', action='store_true', dest='use_distributor',
+                        help='Launch via TorchDistributor on Databricks instead of torchrun.')
+    parser.add_argument('--num-gpus', type=int, default=8, dest='num_gpus',
+                        help='Number of GPUs (only used with --use-distributor)')
     return parser.parse_args()
 
 
@@ -364,4 +368,13 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    # Support --use-distributor for TorchDistributor launch on Databricks
+    import sys as _sys
+    if '--use-distributor' in _sys.argv:
+        from transolver3.databricks_training import launch_distributed_training
+        # Parse just num_gpus before handing off
+        _idx = _sys.argv.index('--num-gpus') if '--num-gpus' in _sys.argv else None
+        _num_gpus = int(_sys.argv[_idx + 1]) if _idx else 8
+        launch_distributed_training(main, _num_gpus)
+    else:
+        main()
