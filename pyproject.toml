@@ -19,6 +19,13 @@ test = [
 benchmark = [
     "matplotlib>=3.7",
 ]
+databricks = [
+    "pyspark>=3.5",
+    "delta-spark>=3.0",
+    "mlflow>=2.10",
+    "databricks-sdk>=0.20",
+    "matplotlib>=3.7",
+]
 
 [build-system]
 requires = ["hatchling"]
