@@ -345,6 +345,8 @@ def record_session(
         env=env,
     )
 
+    assert proc.stdin is not None
+    assert proc.stdout is not None
     proc.stdin.write(prompt.encode("utf-8"))
     proc.stdin.close()
 
