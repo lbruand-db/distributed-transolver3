@@ -1,5 +1,11 @@
 # Transolver-3
 
+[![CI](https://github.com/lbruand-db/distributed-transolver3/actions/workflows/ci.yml/badge.svg)](https://github.com/lbruand-db/distributed-transolver3/actions/workflows/ci.yml)
+[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+[![ty](https://img.shields.io/badge/type--checked-ty-blue)](https://github.com/astral-sh/ty)
+[![pytest](https://img.shields.io/badge/tests-pytest-green)](https://docs.pytest.org/)
+[![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/release/python-3120/)
+
 Scaling Transformer Solvers to Industrial-Scale Geometries (100M+ cells).
 
 Based on the [Transolver paper](https://arxiv.org/abs/2402.02366) (ICML 2024 Spotlight) and the [Transolver-3 paper](https://arxiv.org/pdf/2602.04940).
