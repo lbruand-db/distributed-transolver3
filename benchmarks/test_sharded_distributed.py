@@ -268,6 +268,86 @@ def test_sharded_decode(rank, world_size, device, model_ddp, cache):
     log("  PASSED", rank)
 
 
+def test_predict_gather(rank, world_size, device, model_ddp):
+    """Test: predict(gather=True) reassembles full predictions correctly."""
+    log("=== Test 4: Predict with Gather ===", rank)
+    cfg = CFG
+
+    raw_model = model_ddp.module if hasattr(model_ddp, "module") else model_ddp
+    raw_model.eval()
+
+    x_full, _ = generate_synthetic_data(cfg["n_points"], cfg["space_dim"], cfg["out_dim"], seed=cfg["seed"] + 200)
+    x_full = x_full.to(device)
+
+    # Single-GPU prediction (ground truth — rank 0 computes, then broadcasts)
+    if rank == 0:
+        from transolver3.inference import CachedInference
+
+        engine_single = CachedInference(
+            raw_model,
+            cache_chunk_size=cfg["cache_chunk_size"],
+            decode_chunk_size=cfg["decode_chunk_size"],
+            num_tiles=cfg["num_tiles"],
+        )
+        pred_single = engine_single.predict(x_full)
+    else:
+        pred_single = torch.zeros(1, cfg["n_points"], cfg["out_dim"], device=device)
+
+    if dist.is_initialized():
+        dist.broadcast(pred_single, src=0)
+
+    # Sharded predict with gather=True: each rank passes its local shard
+    start, end = mesh_shard_range(cfg["n_points"], rank, world_size)
+    x_local = x_full[:, start:end]
+
+    engine = DistributedCachedInference(
+        raw_model,
+        cache_chunk_size=cfg["cache_chunk_size"],
+        decode_chunk_size=cfg["decode_chunk_size"],
+        num_tiles=cfg["num_tiles"],
+    )
+    pred_gathered = engine.predict(x_local, gather=True)
+
+    # After gather, every rank should have the full (B, N_total, out_dim) tensor
+    assert pred_gathered.shape == pred_single.shape, (
+        f"Shape mismatch: gathered {pred_gathered.shape} vs single {pred_single.shape}"
+    )
+
+    diff = (pred_gathered - pred_single).abs().max().item()
+    log(f"  Rank {rank}: gather diff={diff:.6f}, shape={pred_gathered.shape}", rank)
+
+    # Gather max diff across ranks
+    diff_tensor = torch.tensor([diff], device=device)
+    if dist.is_initialized():
+        dist.all_reduce(diff_tensor, op=dist.ReduceOp.MAX)
+
+    log(f"  Max gather diff across all ranks: {diff_tensor.item():.6f}", rank)
+    assert diff_tensor.item() < 1e-3, f"Gather mismatch: {diff_tensor.item()}"
+
+    # Also test with uneven points: use n_points+1 to force uneven sharding
+    n_uneven = cfg["n_points"] + 1
+    x_uneven, _ = generate_synthetic_data(n_uneven, cfg["space_dim"], cfg["out_dim"], seed=cfg["seed"] + 300)
+    x_uneven = x_uneven.to(device)
+
+    start_u, end_u = mesh_shard_range(n_uneven, rank, world_size)
+    x_local_u = x_uneven[:, start_u:end_u]
+    local_n = end_u - start_u
+
+    pred_uneven = engine.predict(x_local_u, gather=True)
+
+    # Every rank should get the full tensor
+    assert pred_uneven.shape[1] == n_uneven, f"Uneven gather: got {pred_uneven.shape[1]} points, expected {n_uneven}"
+
+    # Log shard sizes to confirm they're actually uneven
+    all_sizes = [torch.tensor([local_n], device=device) for _ in range(world_size)]
+    dist.all_gather(all_sizes, torch.tensor([local_n], device=device))
+    sizes = [s.item() for s in all_sizes]
+    log(f"  Uneven shard sizes: {sizes} (total={sum(sizes)})", rank)
+    assert len(set(sizes)) > 1, "Expected uneven shard sizes but all were equal"
+
+    log("  PASSED", rank)
+
+
 def main():
     _ensure_path()  # needed when called via TorchDistributor (pickled function)
     rank, world_size = setup_distributed()
@@ -295,6 +375,11 @@ def main():
         t0 = time.time()
         test_sharded_decode(rank, world_size, device, model, cache)
         results["tests"]["sharded_decode"] = {"status": "PASSED", "time_s": time.time() - t0}
+
+        # Test 4: Predict with gather (all_gather + uneven padding)
+        t0 = time.time()
+        test_predict_gather(rank, world_size, device, model)
+        results["tests"]["predict_gather"] = {"status": "PASSED", "time_s": time.time() - t0}
 
     except Exception as e:
         log(f"FAILED: {e}", rank)
