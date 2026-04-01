@@ -26,6 +26,9 @@ variables:
   endpoint_name:
     description: "Serving endpoint name"
     default: "transolver3-serving"
+  num_gpus:
+    description: "Number of GPUs for distributed training"
+    default: "4"
 
 targets:
   # --- GPU profiles (benchmarks & single runs) ---
@@ -35,7 +38,11 @@ targets:
       host: https://e2-demo-field-eng.cloud.databricks.com/
     variables:
       gpu_type: "a10g"
-      node_type_id: "g5.xlarge"
+      node_type_id: "g5.12xlarge"
+      num_gpus: "4"
+      catalog: "lucasbruand_catalog"
+      schema: "cfd"
+      data_volume_path: "/Volumes/lucasbruand_catalog/cfd/data"
 
   a100_40:
     workspace:
@@ -43,6 +50,7 @@ targets:
     variables:
       gpu_type: "a100_40"
       node_type_id: "p4d.24xlarge"
+      num_gpus: "8"
 
   a100_80:
     workspace:
@@ -50,6 +58,7 @@ targets:
     variables:
       gpu_type: "a100_80"
       node_type_id: "p4de.24xlarge"
+      num_gpus: "8"
 
   # --- Pipeline environments ---
   dev:

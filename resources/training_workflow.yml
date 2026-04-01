@@ -19,9 +19,12 @@ resources:
             spark_version: "15.4.x-gpu-ml-scala2.12"
             node_type_id: "i3.xlarge"
             num_workers: 0
+            data_security_mode: "SINGLE_USER"
             spark_conf:
               spark.databricks.cluster.profile: "singleNode"
               spark.master: "local[*]"
+            custom_tags:
+              ResourceClass: "SingleNode"
           libraries:
             - pypi:
                 package: "einops>=0.7"
@@ -39,17 +42,22 @@ resources:
               - "${var.data_volume_path}"
               - "--use-distributor"
               - "--num-gpus"
-              - "8"
+              - "${var.num_gpus}"
               - "--epochs"
-              - "500"
+              - "2"
+              - "--save_dir"
+              - "${var.data_volume_path}/checkpoints"
           new_cluster:
             spark_version: "15.4.x-gpu-ml-scala2.12"
             node_type_id: ${var.node_type_id}
             num_workers: 0
+            data_security_mode: "SINGLE_USER"
             spark_conf:
               spark.databricks.cluster.profile: "singleNode"
               spark.master: "local[*]"
-              spark.task.resource.gpu.amount: "8"
+              spark.task.resource.gpu.amount: "${var.num_gpus}"
+            spark_env_vars:
+              PYTHONPATH: "${workspace.file_path}:${workspace.file_path}/Industrial-Scale-Benchmarks"
             custom_tags:
               ResourceClass: "SingleNode"
           libraries:
@@ -71,14 +79,17 @@ resources:
               - "${var.data_volume_path}"
               - "--eval_only"
               - "--checkpoint"
-              - "./checkpoints/drivaer_ml_distributed/best_model.pt"
+              - "${var.data_volume_path}/checkpoints/best_model.pt"
           new_cluster:
             spark_version: "15.4.x-gpu-ml-scala2.12"
             node_type_id: ${var.node_type_id}
             num_workers: 0
+            data_security_mode: "SINGLE_USER"
             spark_conf:
               spark.databricks.cluster.profile: "singleNode"
               spark.master: "local[*]"
+            spark_env_vars:
+              PYTHONPATH: "${workspace.file_path}:${workspace.file_path}/Industrial-Scale-Benchmarks"
             custom_tags:
               ResourceClass: "SingleNode"
           libraries:
@@ -100,13 +111,18 @@ resources:
               - "${var.schema}"
               - "--model_name"
               - "${var.model_name}"
+              - "--checkpoint"
+              - "${var.data_volume_path}/checkpoints/best_model.pt"
           new_cluster:
             spark_version: "15.4.x-gpu-ml-scala2.12"
             node_type_id: "i3.xlarge"
             num_workers: 0
+            data_security_mode: "SINGLE_USER"
             spark_conf:
               spark.databricks.cluster.profile: "singleNode"
               spark.master: "local[*]"
+            custom_tags:
+              ResourceClass: "SingleNode"
           libraries:
             - pypi:
                 package: "einops>=0.7"
@@ -134,9 +150,12 @@ resources:
             spark_version: "15.4.x-gpu-ml-scala2.12"
             node_type_id: "i3.xlarge"
             num_workers: 0
+            data_security_mode: "SINGLE_USER"
             spark_conf:
               spark.databricks.cluster.profile: "singleNode"
               spark.master: "local[*]"
+            custom_tags:
+              ResourceClass: "SingleNode"
           libraries:
             - pypi:
                 package: "databricks-sdk>=0.20"

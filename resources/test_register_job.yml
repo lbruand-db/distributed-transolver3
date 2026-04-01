@@ -1,0 +1,22 @@
+resources:
+  jobs:
+    test_register:
+      name: "[${bundle.target}] Test Register Model"
+
+      tasks:
+        - task_key: "test_register"
+          spark_python_task:
+            python_file: ../scripts/test_register.py
+            parameters:
+              - "--checkpoint"
+              - "${var.data_volume_path}/checkpoints/best_model.pt"
+          environment_key: "default"
+
+      environments:
+        - environment_key: "default"
+          spec:
+            client: "1"
+            dependencies:
+              - "einops>=0.7"
+              - "timm>=1.0"
+              - "torch>=2.0"

@@ -9,7 +9,8 @@ import argparse
 import sys
 import os
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+_this_dir = os.path.dirname(os.path.abspath(__file__)) if "__file__" in dir() else os.getcwd()
+sys.path.insert(0, os.path.join(_this_dir, ".."))
 
 from transolver3.serving import deploy_serving_endpoint  # noqa: E402
 

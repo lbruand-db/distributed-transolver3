@@ -1,0 +1,32 @@
+resources:
+  jobs:
+    test_mlflow_auth:
+      name: "[${bundle.target}] Test MLflow Auth Propagation"
+
+      tasks:
+        - task_key: "test_auth"
+          spark_python_task:
+            python_file: ../scripts/test_mlflow_auth.py
+            parameters:
+              - "--use-distributor"
+              - "--num-gpus"
+              - "2"
+          new_cluster:
+            spark_version: "15.4.x-gpu-ml-scala2.12"
+            node_type_id: "g5.xlarge"
+            num_workers: 0
+            data_security_mode: "SINGLE_USER"
+            spark_conf:
+              spark.databricks.cluster.profile: "singleNode"
+              spark.master: "local[*]"
+            spark_env_vars:
+              PYTHONPATH: "${workspace.file_path}:${workspace.file_path}/Industrial-Scale-Benchmarks"
+            custom_tags:
+              ResourceClass: "SingleNode"
+          libraries:
+            - pypi:
+                package: "einops>=0.7"
+            - pypi:
+                package: "timm>=1.0"
+            - pypi:
+                package: "mlflow>=2.10"

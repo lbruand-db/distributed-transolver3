@@ -23,7 +23,8 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+_this_dir = os.path.dirname(os.path.abspath(__file__)) if "__file__" in dir() else os.getcwd()
+sys.path.insert(0, os.path.join(_this_dir, ".."))
 
 from transolver3.model import Transolver3
 from transolver3.amortized_training import (
@@ -322,27 +323,35 @@ def main():
     log(f"Tiles: {args.num_tiles}, Cache chunks: {args.cache_chunk_size:,}")
 
     # --- MLflow tracking (rank 0 only) ---
+    # Auth env vars are propagated by _propagate_databricks_auth_env() in the
+    # driver before TorchDistributor launches, so child processes can reach MLflow.
     mlflow_run = None
     if _HAS_MLFLOW and is_main_process():
-        mlflow_run = mlflow.start_run(run_name=f"drivaer-{args.field}-{args.n_layers}L")
-        log_training_run(
-            model,
-            {
-                "field": args.field,
-                "epochs": args.epochs,
-                "lr": scaled_lr,
-                "weight_decay": args.weight_decay,
-                "subset_size": args.subset_size,
-                "n_layers": args.n_layers,
-                "n_hidden": args.n_hidden,
-                "n_head": args.n_head,
-                "slice_num": args.slice_num,
-                "num_tiles": args.num_tiles,
-                "world_size": world_size,
-                "shard_mesh": shard_mesh,
-            },
-        )
+        try:
+            mlflow.set_experiment("/Shared/transolver3-experiments")
+            mlflow_run = mlflow.start_run(run_name=f"drivaer-{args.field}-{args.n_layers}L")
+            log_training_run(
+                model,
+                {
+                    "field": args.field,
+                    "epochs": args.epochs,
+                    "lr": scaled_lr,
+                    "weight_decay": args.weight_decay,
+                    "subset_size": args.subset_size,
+                    "n_layers": args.n_layers,
+                    "n_hidden": args.n_hidden,
+                    "n_head": args.n_head,
+                    "slice_num": args.slice_num,
+                    "num_tiles": args.num_tiles,
+                    "world_size": world_size,
+                    "shard_mesh": shard_mesh,
+                },
+            )
+        except Exception as e:
+            log(f"MLflow tracking unavailable ({e}), continuing without it")
+            mlflow_run = None
 
+    # --- Training loop ---
     best_error = float("inf")
     for epoch in range(args.epochs):
         train_sampler.set_epoch(epoch)  # shuffle differently each epoch
@@ -353,7 +362,6 @@ def main():
         # Evaluate
         if (epoch + 1) % 10 == 0 or epoch == args.epochs - 1:
             if args.shard_eval:
-                # All ranks participate in sharded eval
                 test_error = evaluate(model, test_loader, args, device, sharded=True)
                 log(
                     f"Epoch {epoch + 1}/{args.epochs} | "
@@ -381,7 +389,7 @@ def main():
         else:
             log(f"Epoch {epoch + 1}/{args.epochs} | train_loss={train_loss:.6f} | time={t1 - t0:.1f}s")
 
-        # Log metrics to MLflow
+        # Log metrics to MLflow (live, per-epoch)
         if mlflow_run and is_main_process():
             mlflow.log_metric("train_loss", train_loss, step=epoch)
             mlflow.log_metric("epoch_time_s", t1 - t0, step=epoch)
@@ -412,6 +420,23 @@ if __name__ == "__main__":
         # Parse just num_gpus before handing off
         _idx = _sys.argv.index("--num-gpus") if "--num-gpus" in _sys.argv else None
         _num_gpus = int(_sys.argv[_idx + 1]) if _idx else 8
-        launch_distributed_training(main, _num_gpus)
+
+        # Strip --use-distributor and --num-gpus from argv so child processes
+        # launched by torchrun call main() directly (not re-enter distributor)
+        _clean_argv = []
+        _skip_next = False
+        for _a in _sys.argv[1:]:  # skip script name
+            if _skip_next:
+                _skip_next = False
+                continue
+            if _a == "--use-distributor":
+                continue
+            if _a == "--num-gpus":
+                _skip_next = True
+                continue
+            _clean_argv.append(_a)
+        _sys.argv = [_sys.argv[0]] + _clean_argv
+
+        launch_distributed_training(main, _num_gpus, cli_args=_clean_argv)
     else:
         main()

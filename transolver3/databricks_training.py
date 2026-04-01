@@ -25,34 +25,89 @@ def is_on_databricks():
     return "DATABRICKS_RUNTIME_VERSION" in os.environ
 
 
-def launch_distributed_training(train_fn, num_gpus, **kwargs):
+def _propagate_databricks_auth_env():
+    """Ensure Databricks auth env vars are set for child processes.
+
+    On Databricks, the driver has implicit auth via internal APIs.
+    But torchrun child processes don't inherit it. This function
+    extracts credentials from MLflow's own working auth (which uses
+    the driver's internal APIs) and sets them as env vars so child
+    processes can authenticate independently.
+
+    Must be called in the driver process before TorchDistributor launches.
+    """
+    if os.environ.get("DATABRICKS_HOST") and os.environ.get("DATABRICKS_TOKEN"):
+        return  # already set
+
+    # Extract host + token from MLflow's Databricks credential provider.
+    # This works because MLflow CAN auth in the driver — we just need to
+    # capture the same credentials as env vars for child processes.
+    try:
+        from mlflow.utils.databricks_utils import get_databricks_host_creds
+
+        creds = get_databricks_host_creds()
+        if creds.host and creds.token:
+            os.environ["DATABRICKS_HOST"] = creds.host
+            os.environ["DATABRICKS_TOKEN"] = creds.token
+            return
+    except Exception:
+        pass
+
+    # Fallback: Databricks SDK
+    try:
+        from databricks.sdk import WorkspaceClient
+
+        w = WorkspaceClient()
+        config = w.config
+        if config.host and config.token:
+            os.environ["DATABRICKS_HOST"] = config.host
+            os.environ["DATABRICKS_TOKEN"] = config.token
+            return
+    except Exception:
+        pass
+
+
+def launch_distributed_training(train_fn, num_gpus, cli_args=None, **kwargs):
     """Launch distributed training using TorchDistributor on Databricks,
     or torchrun locally.
 
     Args:
-        train_fn: callable that runs the training logic.
-            On Databricks, this is passed to TorchDistributor.run().
+        train_fn: callable that runs the training logic, or a string script path.
+            On Databricks, the script path is passed to TorchDistributor.run()
+            so that child processes inherit PYTHONPATH (avoids cloudpickle
+            module resolution issues).
             Locally, a torchrun subprocess is spawned.
         num_gpus: number of GPU processes to launch
-        **kwargs: additional arguments passed to train_fn
+        cli_args: list of CLI arguments to forward to the script (used on Databricks)
+        **kwargs: additional arguments passed as CLI flags (local fallback)
 
     Returns:
         Result from TorchDistributor.run() on Databricks, or
         subprocess.CompletedProcess locally.
     """
+    script = _resolve_script_path(train_fn)
+
     if is_on_databricks():
         from pyspark.ml.torch.distributor import TorchDistributor
+
+        # Ensure Databricks auth env vars are set so torchrun child processes
+        # can reach MLflow. The driver has these from the notebook context but
+        # they may not propagate to children automatically.
+        _propagate_databricks_auth_env()
 
         distributor = TorchDistributor(
             num_processes=num_gpus,
             local_mode=True,
             use_gpu=True,
         )
-        return distributor.run(train_fn, **kwargs)
+        # Pass script path (not function) so torchrun runs it directly.
+        # This avoids cloudpickle serialization issues where child processes
+        # cannot find transolver3 module.
+        # Forward CLI args so child processes get --data_dir, --epochs, etc.
+        if cli_args:
+            return distributor.run(script, *cli_args)
+        return distributor.run(script)
     else:
-        # Local fallback: use torchrun
-        # train_fn must be importable as a script with if __name__ == '__main__'
-        script = _resolve_script_path(train_fn)
         cmd = [
             sys.executable,
             "-m",
@@ -92,6 +147,14 @@ def _resolve_script_path(train_fn):
     # If it has __file__ directly (e.g., a module object)
     if hasattr(train_fn, "__file__") and train_fn.__file__:
         return os.path.abspath(train_fn.__file__)
+
+    # If it's a function executed via exec(compile(src, filename, 'exec')),
+    # the code object's co_filename has the original file path.
+    code = getattr(train_fn, "__code__", None)
+    if code and getattr(code, "co_filename", None):
+        co_file = code.co_filename
+        if os.path.isfile(co_file):
+            return os.path.abspath(co_file)
 
     raise ValueError(
         f"Cannot resolve script path for {train_fn}. "

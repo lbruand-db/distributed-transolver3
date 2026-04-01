@@ -17,8 +17,13 @@ import tempfile
 import torch
 import numpy as np
 
+try:
+    import mlflow.pyfunc
+except ImportError:
+    mlflow = None
 
-class TransolverPyfunc:
+
+class TransolverPyfunc(mlflow.pyfunc.PythonModel if mlflow else object):
     """MLflow pyfunc wrapper for Transolver-3 cached inference.
 
     Handles normalization, cache building, and decoding in a single predict() call.
@@ -182,11 +187,20 @@ def register_serving_model(
 
         registered_name = f"{catalog}.{schema}.{model_name}"
 
+        # UC Model Registry requires a signature. Provide an input example
+        # so MLflow can infer it automatically.
+        import pandas as pd
+
+        space_dim = config["space_dim"]
+        sample_coords = np.random.randn(10, space_dim).tolist()
+        input_example = pd.DataFrame({"coordinates": [json.dumps(sample_coords)]})
+
         return mlflow.pyfunc.log_model(
             artifact_path="transolver3_serving",
             python_model=TransolverPyfunc(),
             artifacts=artifacts,
             registered_model_name=registered_name,
+            input_example=input_example,
             pip_requirements=["torch>=2.0", "einops>=0.7", "timm>=1.0", "numpy>=1.24"],
         )
 
