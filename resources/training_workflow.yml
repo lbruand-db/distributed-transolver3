@@ -78,8 +78,8 @@ resources:
               - "--data_dir"
               - "${var.data_volume_path}"
               - "--eval_only"
-              - "--checkpoint"
-              - "${var.data_volume_path}/checkpoints/best_model.pt"
+              - "--mlflow_run_id_file"
+              - "${var.data_volume_path}/checkpoints/mlflow_run_id.txt"
           new_cluster:
             spark_version: "15.4.x-gpu-ml-scala2.12"
             node_type_id: ${var.node_type_id}
@@ -97,11 +97,13 @@ resources:
                 package: "einops>=0.7"
             - pypi:
                 package: "timm>=1.0"
+            - pypi:
+                package: "mlflow>=2.10"
 
         - task_key: "register"
           depends_on:
             - task_key: "evaluate"
-          description: "Register trained model in UC Model Registry"
+          description: "Promote trained model to UC Model Registry"
           spark_python_task:
             python_file: ../scripts/register_model.py
             parameters:
@@ -111,8 +113,8 @@ resources:
               - "${var.schema}"
               - "--model_name"
               - "${var.model_name}"
-              - "--checkpoint"
-              - "${var.data_volume_path}/checkpoints/best_model.pt"
+              - "--mlflow_run_id_file"
+              - "${var.data_volume_path}/checkpoints/mlflow_run_id.txt"
           new_cluster:
             spark_version: "15.4.x-gpu-ml-scala2.12"
             node_type_id: "i3.xlarge"
@@ -124,10 +126,6 @@ resources:
             custom_tags:
               ResourceClass: "SingleNode"
           libraries:
-            - pypi:
-                package: "einops>=0.7"
-            - pypi:
-                package: "timm>=1.0"
             - pypi:
                 package: "mlflow>=2.10"
 

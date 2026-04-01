@@ -77,6 +77,12 @@ def parse_args():
     parser.add_argument("--decode_chunk_size", type=int, default=50000)
     parser.add_argument("--eval_only", action="store_true")
     parser.add_argument("--checkpoint", type=str, default=None)
+    parser.add_argument(
+        "--mlflow_run_id_file",
+        type=str,
+        default=None,
+        help="Path to file containing MLflow run_id. If set, loads model from MLflow instead of --checkpoint.",
+    )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
         "--no-shard-mesh",
@@ -292,8 +298,18 @@ def main():
     n_params = sum(p.numel() for p in model.parameters())
     log(f"Model parameters: {n_params:,}")
 
-    if args.checkpoint:
-        # Load checkpoint on all ranks
+    if args.mlflow_run_id_file and os.path.exists(args.mlflow_run_id_file):
+        # Load model from MLflow (preferred over --checkpoint)
+        with open(args.mlflow_run_id_file) as f:
+            run_id = f.read().strip()
+        log(f"Loading model from MLflow run: {run_id}")
+        import mlflow.pytorch
+
+        loaded_model = mlflow.pytorch.load_model(f"runs:/{run_id}/transolver3", map_location=device)
+        model.module.load_state_dict(loaded_model.state_dict())
+        log(f"Loaded model from MLflow run {run_id}")
+    elif args.checkpoint:
+        # Fallback: load from checkpoint file
         state_dict = torch.load(args.checkpoint, map_location=device)
         model.module.load_state_dict(state_dict)
         log(f"Loaded checkpoint: {args.checkpoint}")
@@ -396,7 +412,7 @@ def main():
 
     log(f"\nBest test relative L2 error: {best_error:.4f} ({best_error * 100:.2f}%)")
 
-    # Log best model to MLflow
+    # Log best model to MLflow and save run_id for downstream tasks
     if mlflow_run and is_main_process():
         mlflow.log_metric("best_test_l2", best_error)
         best_path = os.path.join(args.save_dir, "best_model.pt")
@@ -405,6 +421,14 @@ def main():
             raw_model.load_state_dict(torch.load(best_path, map_location=device))
             sample_x = torch.randn(1, 100, space_dim, device=device)
             log_model_with_signature(raw_model, sample_x)
+
+        # Write run_id so evaluate/register tasks can reference this run
+        run_id = mlflow_run.info.run_id
+        run_id_path = os.path.join(args.save_dir, "mlflow_run_id.txt")
+        with open(run_id_path, "w") as f:
+            f.write(run_id)
+        log(f"MLflow run_id saved to {run_id_path}: {run_id}")
+
         mlflow.end_run()
 
     cleanup()
