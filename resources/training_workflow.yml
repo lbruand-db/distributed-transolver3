@@ -158,4 +158,8 @@ resources:
               ResourceClass: "SingleNode"
           libraries:
             - pypi:
+                package: "einops>=0.7"
+            - pypi:
+                package: "timm>=1.0"
+            - pypi:
                 package: "databricks-sdk>=0.20"
