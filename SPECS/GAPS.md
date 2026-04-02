@@ -44,9 +44,9 @@ Added `validate-dab` job to CI that installs the Databricks CLI and runs `databr
 
 ## LOW Risk (Nice to have)
 
-### 7. No gradient accumulation
+### 7. ~~No gradient accumulation~~ DONE
 
-Effective batch size is fixed at `batch_size x world_size`. No `--gradient_accumulation_steps` flag.
+Added `--accumulation_steps N` flag. Loss is scaled by 1/N, gradients accumulate over N micro-batches before optimizer step. Effective batch = `batch_size x world_size x accumulation_steps`.
 
 ### 8. No v1 to v3 migration guide
 

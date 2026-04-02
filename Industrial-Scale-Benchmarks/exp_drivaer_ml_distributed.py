@@ -74,6 +74,12 @@ def parse_args():
     parser.add_argument("--slice_num", type=int, default=64)
     parser.add_argument("--num_tiles", type=int, default=8)
     parser.add_argument("--grad_clip", type=float, default=1.0)
+    parser.add_argument(
+        "--accumulation_steps",
+        type=int,
+        default=1,
+        help="Gradient accumulation steps. Effective batch = batch_size * world_size * accumulation_steps.",
+    )
     parser.add_argument("--cache_chunk_size", type=int, default=100000)
     parser.add_argument("--decode_chunk_size", type=int, default=50000)
     parser.add_argument("--eval_only", action="store_true")
@@ -161,30 +167,33 @@ def train_epoch(model, dataloader, optimizer, scheduler, sampler, args, device):
     model.train()
     total_loss = 0.0
     count = 0
+    accum = args.accumulation_steps
     x_key, t_key = get_field_key(args.field)
 
-    for batch in dataloader:
+    optimizer.zero_grad()
+    for step, batch in enumerate(dataloader):
         x = batch[x_key].to(device)
         target = batch[t_key].to(device)
-
-        optimizer.zero_grad()
 
         N = x.shape[1]
         indices = sampler.sample(N).to(device)
         x_sub = x[:, indices]
         target_sub = target[:, indices]
 
+        # Scale loss by accumulation steps so gradients average correctly
         pred = model(x_sub, num_tiles=args.num_tiles)
-        loss = relative_l2_loss(pred, target_sub)
+        loss = relative_l2_loss(pred, target_sub) / accum
         loss.backward()
         # DDP handles gradient all-reduce automatically on backward()
 
-        torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
-        optimizer.step()
-        scheduler.step()
-
-        total_loss += loss.item()
+        total_loss += loss.item() * accum  # unscale for logging
         count += 1
+
+        if (step + 1) % accum == 0 or (step + 1) == len(dataloader):
+            torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
+            optimizer.step()
+            scheduler.step()
+            optimizer.zero_grad()
 
     return total_loss / max(count, 1)
 
