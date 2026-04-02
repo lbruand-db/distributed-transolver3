@@ -124,12 +124,12 @@ def log(msg):
 
 
 def logall(msg):
-    """Print on all ranks with rank prefix."""
-    try:
-        rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else 0
-    except Exception:
-        rank = 0
-    print(f"[rank {rank}] {msg}", flush=True)
+    """Print on all ranks with rank prefix (falls back to PID before dist init)."""
+    if torch.distributed.is_initialized():
+        prefix = f"rank {torch.distributed.get_rank()}"
+    else:
+        prefix = f"pid {os.getpid()}"
+    print(f"[{prefix}] {msg}", flush=True)
 
 
 def train_epoch(model, dataloader, optimizer, scheduler, sampler, args, device):
