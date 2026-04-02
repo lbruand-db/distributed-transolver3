@@ -52,9 +52,9 @@ Added `--accumulation_steps N` flag. Loss is scaled by 1/N, gradients accumulate
 
 Added `SPECS/MIGRATION_V1_TO_V3.md` covering data format conversion, model config changes, training loop differences, inference API, Databricks deployment, and a migration checklist.
 
-### 9. Reproducibility is manual
+### 9. ~~Reproducibility is manual~~ DONE
 
-Seeds and configs are logged correctly to MLflow, but there's no single command to reproduce a past run from its MLflow run ID.
+Added `scripts/reproduce_run.py` that fetches params from an MLflow run ID and generates the exact CLI command to re-run training. Supports `--execute` to run it directly.
 
 ## What's already solid
 
