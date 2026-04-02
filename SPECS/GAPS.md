@@ -4,12 +4,9 @@ Perspective: PhD data scientist migrating from Transolver v1 on Azure ML to dist
 
 ## HIGH Risk (Blockers)
 
-### 1. AWS-only — no Azure support
+### 1. ~~AWS-only — no Azure support~~ DONE
 
-- `databricks.yml` hardcodes AWS instance types (`g5.12xlarge`, `p4d.24xlarge`) and workspace URLs
-- `training_workflow.yml` has `aws_attributes: availability: ON_DEMAND`
-- No Azure equivalents documented (`Standard_NC24ads_A100_v4`, etc.)
-- A data scientist on Azure can't deploy without rewriting the DAB config
+Added Azure targets (`azure_a10`, `azure_a100`, `azure_a100_80`) to `databricks.yml` with mapped instance types. Removed `aws_attributes` from `training_workflow.yml` to make it cloud-agnostic.
 
 **Files:** `databricks.yml`, `resources/training_workflow.yml`
 

@@ -52,8 +52,6 @@ resources:
             node_type_id: ${var.node_type_id}
             num_workers: 0
             data_security_mode: "SINGLE_USER"
-            aws_attributes:
-              availability: "ON_DEMAND"
             spark_conf:
               spark.databricks.cluster.profile: "singleNode"
               spark.master: "local[*]"
