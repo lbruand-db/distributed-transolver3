@@ -9,7 +9,7 @@ Physics-informed transformer solver for industrial-scale CFD simulations (100M+ 
 - **Package manager**: uv
 - **Test runner**: pytest (`uv run pytest`)
 - **Core package**: `transolver3/`
-- **52 tests**, all should pass
+- **100 tests**, all should pass
 
 ## Common Commands
 
@@ -21,10 +21,11 @@ uv run pytest -k "test_cached"  # Run specific tests
 uv run ruff check .        # Lint
 uv run ruff format .       # Format (run before committing)
 
-# Databricks Asset Bundle
-databricks bundle deploy -t a10g
-databricks bundle run gpu_memory_benchmark
-databricks bundle run distributed_sharded_test
+# Databricks Asset Bundle (requires `databricks auth login` first)
+databricks bundle deploy -t a10g --profile DEFAULT
+databricks bundle run transolver3_training_pipeline -t a10g --profile DEFAULT  # Full 5-task pipeline
+databricks bundle run test_mlflow_auth -t a10g --profile DEFAULT               # Smoke test MLflow auth
+databricks bundle run test_register_deploy -t a10g --profile DEFAULT           # Serverless register+deploy
 ```
 
 ## Architecture
@@ -43,26 +44,60 @@ The model is an encoder-only transformer with Physics-Attention layers that oper
 - `transolver3/inference.py` — `CachedInference` and `DistributedCachedInference` wrappers
 - `transolver3/distributed.py` — DDP mesh sharding utilities
 - `transolver3/normalizer.py` — `InputNormalizer` (min-max), `TargetNormalizer` (z-score)
+- `transolver3/databricks_training.py` — TorchDistributor launcher + Databricks auth propagation
+- `transolver3/serving.py` — MLflow pyfunc wrapper (`TransolverPyfunc`) + UC Model Registry + serving endpoint
 - `Industrial-Scale-Benchmarks/exp_drivaer_ml_distributed.py` — Multi-GPU training script
 
 ## Data Format
 
-Input data is `.npz` files (NumPy compressed) loaded via `np.load(mmap_mode='r')` for memory-mapped I/O. A single DrivAerML sample is ~12 GB (140M points × 22 features × 4 bytes).
+Input data is `.npz` files (NumPy compressed) loaded via `np.load(mmap_mode='r')` for memory-mapped I/O. A single DrivAerML sample is ~12 GB (140M points × 22 features × 4 bytes). Use `validate_npz()` from `dataset/drivaer_ml.py` to check schema and data quality.
 
 ## Distributed Training
 
-Uses `torch.distributed` DDP with mesh sharding: each GPU loads 1/K of the mesh via mmap range reads, computes local slice accumulators, and all-reduces them (~514 KB/layer). On Databricks, use `TorchDistributor` on multi-GPU instances.
+Uses `torch.distributed` DDP with mesh sharding: each GPU loads 1/K of the mesh via mmap range reads, computes local slice accumulators, and all-reduces them (~514 KB/layer). On Databricks, TorchDistributor launches torchrun in `local_mode=True` on a single multi-GPU node (e.g., `g5.12xlarge` with 4x A10G).
+
+**Key design decisions** (learned from production debugging):
+- Pass **script path** (not function) to `TorchDistributor.run()` — avoids cloudpickle module resolution failures
+- Script path resolved via `__code__.co_filename` — works in Databricks `exec(compile(...))` context
+- **Databricks auth propagation**: driver extracts `DATABRICKS_HOST`/`TOKEN` from MLflow's credential provider and sets as env vars before forking, so child processes can reach MLflow
+- **Logging**: use `print(..., flush=True)` not `logging` — TorchDistributor captures subprocess stdout via pipe
+- `NCCL_P2P_DISABLE=1` for PCIe-connected GPUs (g5.12xlarge A10Gs)
+- MLflow logging only on rank 0, live per-epoch metrics
+
+## DAB Pipeline
+
+The 5-task pipeline runs on Databricks Asset Bundles. MLflow is the single source of truth for model artifacts — no checkpoint files passed between tasks.
+
+| Task | Cluster | Purpose |
+|------|---------|---------|
+| preprocess | i3.xlarge (CPU) | Mesh metadata + stats to Delta |
+| train | g5.12xlarge (4x A10G) | Mesh-sharded DDP, live MLflow metrics |
+| evaluate | g5.12xlarge (4x A10G) | Load model from MLflow run, cached inference |
+| register | i3.xlarge (CPU) | Promote model to UC Model Registry |
+| deploy | i3.xlarge (CPU) | Create/update serving endpoint |
+
+**Training features**: `--resume` (checkpoint resumption), `--patience` (early stopping), `--accumulation_steps` (gradient accumulation), `--save_every` (periodic checkpoints).
+
+**Fast iteration jobs** (serverless, no GPU):
+- `test_mlflow_auth` — verifies auth propagation to TorchDistributor children
+- `test_register` — inspects checkpoint and tests model loading
+- `test_register_deploy` — end-to-end register + deploy without training
 
 ## Databricks Integration
 
-- **MLflow**: Experiment tracking and model logging (see README Get Started example)
-- **DABs**: `databricks.yml` defines 3 GPU targets (a10g, a100_40, a100_80) with job resources in `resources/*.yml`
-- **Roadmap**: See `SPECS/VALUEADDED.md` for planned Delta Lake, UC Volumes, Model Serving, and Workflow integrations
+- **MLflow**: Live per-epoch metrics at `/Shared/transolver3-experiments`, model artifacts logged with signature
+- **UC Model Registry**: Models promoted from MLflow runs (no re-logging)
+- **Model Serving**: Scale-to-zero endpoint via `TransolverPyfunc` with input validation
+- **UC Volumes**: `.npz` mesh data, checkpoints, `mlflow_run_id.txt` for cross-task communication
+- **DABs**: `databricks.yml` defines AWS + Azure targets with job resources in `resources/*.yml`
 
 ## Specs & Design Docs
 
 - `SPECS/SPEC.md` — Core v3 architecture specification
 - `SPECS/DISTRIBUTED.md` — Multi-GPU distribution design (3 implementation options)
+- `SPECS/DISTRIBUTED_ARCHITECTURE.md` — Mermaid diagrams: pipeline, process model, data flow, logging
+- `SPECS/GAPS.md` — Production gap analysis (all 9 gaps addressed)
+- `SPECS/MIGRATION_V1_TO_V3.md` — Guide for migrating from Transolver v1 / Azure ML
 - `SPECS/DIFFERENTIATORS.md` — Why Databricks is ideal for this workload
 - `SPECS/VALUEADDED.md` — Databricks stickiness plan with prioritized integrations
 - `SPECS/CRITICAL_ISSUES.md` — Known issues
@@ -76,3 +111,5 @@ Uses `torch.distributed` DDP with mesh sharding: each GPU loads 1/K of the mesh 
 - Mixed precision via `torch.amp`, not manual casting
 - Tests verify numerical equivalence between tiled/untiled and cached/direct paths (tolerance ~1e-7)
 - **Formatter/Linter**: ruff — run `uv run ruff format .` and `uv run ruff check .` before committing
+- **Logging in distributed training**: use `print(..., flush=True)` with `log()` (rank 0) or `logall()` (all ranks + timestamp)
+- **CI**: ruff lint, ty type check, pytest, yamllint on DAB YAML files
