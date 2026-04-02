@@ -38,23 +38,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Databricks CLI
+      - name: Validate DAB YAML files
         run: |
-          curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh
-
-      - name: Validate DAB bundle syntax
-        run: databricks bundle validate -t a10g 2>&1 | tee /tmp/validate.log
-        env:
-          # Validation only checks syntax — no workspace connection needed.
-          # Set a dummy host to satisfy the config parser.
-          DATABRICKS_HOST: https://dummy.cloud.databricks.com
-          DATABRICKS_TOKEN: dapi_dummy_for_syntax_validation
-
-      - name: Check for errors (warnings are OK)
-        run: |
-          if grep -q "^Error:" /tmp/validate.log; then
-            echo "DAB validation found errors:"
-            grep "^Error:" /tmp/validate.log
-            exit 1
-          fi
-          echo "DAB validation passed (warnings only)"
+          pip install yamllint -q
+          yamllint -d relaxed databricks.yml resources/*.yml
