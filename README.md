@@ -36,7 +36,7 @@ dbutils.library.restartPython()
 ### DAB deployment
 
 ```bash
-databricks bundle deploy -t a10g       # Single A10G (24 GB)
+databricks bundle deploy -t a10g       # 4x A10G (96 GB) — default
 databricks bundle deploy -t a100_40    # 8x A100 40GB
 databricks bundle deploy -t a100_80    # 8x A100 80GB
 ```
@@ -139,12 +139,17 @@ resources/                            # DAB job definitions
 ├── training_workflow.yml             # 5-task pipeline (preprocess → train → evaluate → register → deploy)
 ├── serving_endpoint.yml              # Model Serving endpoint config
 ├── gpu_benchmark_job.yml             # Single-GPU memory benchmark
-└── distributed_test_job.yml          # 2-GPU mesh-sharded test
+├── distributed_test_job.yml          # 2-GPU mesh-sharded test
+├── test_mlflow_auth_job.yml          # Smoke test MLflow auth in TorchDistributor children
+├── test_register_job.yml             # Serverless checkpoint inspection test
+└── test_register_deploy_job.yml      # Serverless register + deploy test
 
 scripts/                              # Entry points for DAB tasks
 ├── preprocess.py                     # Register mesh metadata + compute stats
-├── register_model.py                 # Register model in UC Model Registry
-└── deploy_endpoint.py                # Deploy to Databricks serving endpoint
+├── register_model.py                 # Promote model from MLflow run to UC registry
+├── deploy_endpoint.py                # Deploy to Databricks serving endpoint
+├── test_mlflow_auth.py               # MLflow auth propagation smoke test
+└── test_register.py                  # Checkpoint inspection + model load test
 
 skills/                               # Claude Code skills for newcomers
 ├── transolver-data.md                # Mesh data management
@@ -173,18 +178,19 @@ benchmarks/                           # GPU benchmarking
 SPECS/                                # Design documentation
 ├── SPEC.md                           # Core v3 architecture specification
 ├── DISTRIBUTED.md                    # Multi-GPU distribution design
+├── DISTRIBUTED_ARCHITECTURE.md       # Mermaid diagrams: pipeline, process model, data flow
 ├── CRITICAL_ISSUES.md                # Known issues & fixes
 ├── DIFFERENTIATORS.md                # Why Databricks is ideal
 └── VALUEADDED.md                     # Databricks integration roadmap
 
-tests/                                # 67 tests
+tests/                                # 100 tests
 ├── test_transolver3.py               # Core model tests (41)
 ├── test_distributed.py               # Distributed sharding tests (11)
 ├── test_serving.py                   # Serving tests (4)
 ├── test_monitoring.py                # Monitoring tests (5)
 ├── test_data_catalog.py              # Catalog tests (6)
 ├── test_mlflow_utils.py              # MLflow tests (4)
-└── test_databricks_training.py       # Training integration tests (5)
+└── test_databricks_training.py       # Training integration + auth propagation tests (12)
 ```
 
 ## Memory Scaling
@@ -216,27 +222,35 @@ range reads. The key insight: the slice accumulators `s_raw (B,H,M,C)` are
 **additive** — they can be independently computed from disjoint mesh partitions
 and all-reduced (~514 KB per layer).
 
-### Via TorchDistributor (notebook on multi-GPU cluster)
+### Via DAB Training Pipeline
 
-```python
-from transolver3.databricks_training import launch_distributed_training
-
-launch_distributed_training(
-    data_dir="/Volumes/ml/transolver3/data",
-    n_layers=24, n_hidden=256, slice_num=64,
-    total_steps=50_000, num_gpus=8,
-)
-```
-
-### Via DAB jobs
+The full pipeline runs 5 sequential tasks, each on its own cluster. MLflow is the single source of truth for model artifacts — no checkpoint files are passed between tasks.
 
 ```bash
-databricks bundle deploy -t a100_40
-databricks bundle run distributed_sharded_test   # 2-GPU validation
-databricks bundle run training_workflow           # Full 5-task pipeline
+databricks bundle deploy -t a10g
+databricks bundle run transolver3_training_pipeline
 ```
 
-Validated on 2x NVIDIA A10G: sharded cache and decode produce **zero numerical difference** vs single-GPU. See [SPECS/DISTRIBUTED.md](SPECS/DISTRIBUTED.md) for the full design.
+| Task | Cluster | What it does |
+|------|---------|------|
+| **preprocess** | i3.xlarge (CPU) | Register mesh metadata + compute stats in Delta |
+| **train** | g5.12xlarge (4x A10G) | Mesh-sharded DDP training via TorchDistributor, live MLflow metrics |
+| **evaluate** | g5.12xlarge (4x A10G) | Load model from MLflow run, run cached inference on test set |
+| **register** | i3.xlarge (CPU) | Promote already-logged model to UC Model Registry |
+| **deploy** | i3.xlarge (CPU) | Create/update Model Serving endpoint with scale-to-zero |
+
+The train task uses `TorchDistributor(local_mode=True)` to launch torchrun on a single multi-GPU node. Each GPU loads a disjoint 1/K shard of the mesh via mmap range reads. Gradients are all-reduced via NCCL. See [SPECS/DISTRIBUTED_ARCHITECTURE.md](SPECS/DISTRIBUTED_ARCHITECTURE.md) for Mermaid diagrams of the full architecture.
+
+### Other DAB jobs
+
+```bash
+databricks bundle run gpu_memory_benchmark          # Single-GPU memory sweep
+databricks bundle run distributed_sharded_test      # 2-GPU validation
+databricks bundle run test_mlflow_auth              # Smoke test MLflow auth in child processes
+databricks bundle run test_register_deploy          # Serverless register + deploy (fast iteration)
+```
+
+Validated on 4x NVIDIA A10G: sharded cache and decode produce **zero numerical difference** vs single-GPU. See [SPECS/DISTRIBUTED.md](SPECS/DISTRIBUTED.md) for the original design.
 
 ## GPU Benchmark (DAB)
 
@@ -244,8 +258,8 @@ Three DAB targets map to different GPU instances:
 
 | Target | Instance | GPU | VRAM | Use case |
 |--------|----------|-----|------|----------|
-| `a10g` (default) | `g5.xlarge` | 1x NVIDIA A10G | 24 GB | Benchmarks, small experiments |
-| `a100_40` | `p4d.24xlarge` | 8x NVIDIA A100 | 320 GB | Multi-GPU training |
+| `a10g` (default) | `g5.12xlarge` | 4x NVIDIA A10G | 96 GB | Multi-GPU training, benchmarks |
+| `a100_40` | `p4d.24xlarge` | 8x NVIDIA A100 | 320 GB | Large-scale training |
 | `a100_80` | `p4de.24xlarge` | 8x NVIDIA A100 | 640 GB | Full-scale DrivAerML |
 
 ```bash
