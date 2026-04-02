@@ -48,9 +48,9 @@ Added `validate-dab` job to CI that installs the Databricks CLI and runs `databr
 
 Added `--accumulation_steps N` flag. Loss is scaled by 1/N, gradients accumulate over N micro-batches before optimizer step. Effective batch = `batch_size x world_size x accumulation_steps`.
 
-### 8. No v1 to v3 migration guide
+### 8. ~~No v1 to v3 migration guide~~ DONE
 
-Experiments compare v1 vs v3 results (`experiments/COMPARE_v1v3.md`), but no docs on how to port a v1 training pipeline to v3.
+Added `SPECS/MIGRATION_V1_TO_V3.md` covering data format conversion, model config changes, training loop differences, inference API, Databricks deployment, and a migration checklist.
 
 ### 9. Reproducibility is manual
 
