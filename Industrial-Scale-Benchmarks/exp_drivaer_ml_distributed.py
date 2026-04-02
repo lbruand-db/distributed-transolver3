@@ -117,10 +117,15 @@ def get_field_key(field):
     return f"{field}_x", f"{field}_target"
 
 
+def _ts():
+    """Compact timestamp for log lines."""
+    return time.strftime("%H:%M:%S")
+
+
 def log(msg):
     """Print only on rank 0."""
     if is_main_process():
-        print(msg, flush=True)
+        print(f"[{_ts()}] {msg}", flush=True)
 
 
 def logall(msg):
@@ -129,7 +134,7 @@ def logall(msg):
         prefix = f"rank {torch.distributed.get_rank()}"
     else:
         prefix = f"pid {os.getpid()}"
-    print(f"[{prefix}] {msg}", flush=True)
+    print(f"[{_ts()}] [{prefix}] {msg}", flush=True)
 
 
 def train_epoch(model, dataloader, optimizer, scheduler, sampler, args, device):
