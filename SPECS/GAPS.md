@@ -10,14 +10,11 @@ Added Azure targets (`azure_a10`, `azure_a100`, `azure_a100_80`) to `databricks.
 
 **Files:** `databricks.yml`, `resources/training_workflow.yml`
 
-### 2. No checkpoint resumption
+### 2. ~~No checkpoint resumption~~ DONE
 
-- Can load weights via `--checkpoint`, but optimizer state, scheduler state, and epoch number are lost
-- Training always restarts from epoch 0 with fresh optimizer momentum and LR schedule
-- For production runs (500+ epochs on 140M-point meshes), an interruption means starting over
-- This is the single biggest pain point for long training runs
+Added `--resume` flag that loads full training state (model + optimizer + scheduler + epoch + best_error). Training checkpoints saved every `--save_every` epochs (default: 10) to `{save_dir}/training_checkpoint.pt`. Resume continues from the exact epoch with correct LR schedule.
 
-**Files:** `Industrial-Scale-Benchmarks/exp_drivaer_ml_distributed.py`, `transolver3/amortized_training.py`
+**Files:** `Industrial-Scale-Benchmarks/exp_drivaer_ml_distributed.py`
 
 ### 3. No early stopping
 

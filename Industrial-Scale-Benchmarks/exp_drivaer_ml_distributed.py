@@ -86,6 +86,19 @@ def parse_args():
     )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
+        "--resume",
+        type=str,
+        default=None,
+        help="Path to full training checkpoint (model + optimizer + scheduler + epoch). "
+        "Resumes training from the saved epoch. Overrides --checkpoint.",
+    )
+    parser.add_argument(
+        "--save_every",
+        type=int,
+        default=10,
+        help="Save full training checkpoint every N epochs (default: 10).",
+    )
+    parser.add_argument(
         "--no-shard-mesh",
         action="store_true",
         dest="no_shard_mesh",
@@ -362,7 +375,19 @@ def main():
     # Each rank gets a unique seed for different random subsets
     mesh_sampler = AmortizedMeshSampler(local_subset_size, seed=args.seed + rank)
 
-    log(f"Training: {args.epochs} epochs, lr={scaled_lr:.1e} (scaled {world_size}x)")
+    # Resume from full training checkpoint (model + optimizer + scheduler + epoch)
+    start_epoch = 0
+    if args.resume and os.path.exists(args.resume):
+        log(f"Resuming from checkpoint: {args.resume}")
+        ckpt = torch.load(args.resume, map_location=device)
+        model.module.load_state_dict(ckpt["model"])
+        optimizer.load_state_dict(ckpt["optimizer"])
+        scheduler.load_state_dict(ckpt["scheduler"])
+        start_epoch = ckpt["epoch"] + 1
+        best_error = ckpt.get("best_error", float("inf"))
+        log(f"Resumed from epoch {ckpt['epoch']}, best_error={best_error:.4f}, continuing at epoch {start_epoch}")
+
+    log(f"Training: epochs {start_epoch+1}-{args.epochs}, lr={scaled_lr:.1e} (scaled {world_size}x)")
     log(f"Tiles: {args.num_tiles}, Cache chunks: {args.cache_chunk_size:,}")
 
     # --- MLflow tracking (rank 0 only) ---
@@ -395,8 +420,9 @@ def main():
             mlflow_run = None
 
     # --- Training loop ---
-    best_error = float("inf")
-    for epoch in range(args.epochs):
+    if start_epoch == 0:
+        best_error = float("inf")
+    for epoch in range(start_epoch, args.epochs):
         train_sampler.set_epoch(epoch)  # shuffle differently each epoch
         t0 = time.time()
         train_loss = train_epoch(model, train_loader, optimizer, scheduler, mesh_sampler, args, device)
@@ -431,6 +457,21 @@ def main():
                     dist.barrier()
         else:
             log(f"Epoch {epoch + 1}/{args.epochs} | train_loss={train_loss:.6f} | time={t1 - t0:.1f}s")
+
+        # Save full training checkpoint periodically (for resumption)
+        if is_main_process() and (epoch + 1) % args.save_every == 0:
+            ckpt_path = os.path.join(args.save_dir, "training_checkpoint.pt")
+            torch.save(
+                {
+                    "epoch": epoch,
+                    "model": model.module.state_dict(),
+                    "optimizer": optimizer.state_dict(),
+                    "scheduler": scheduler.state_dict(),
+                    "best_error": best_error,
+                },
+                ckpt_path,
+            )
+            log(f"Saved training checkpoint at epoch {epoch + 1} to {ckpt_path}")
 
         # Log metrics to MLflow (live, per-epoch)
         if mlflow_run and is_main_process():
