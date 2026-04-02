@@ -4,73 +4,57 @@ Perspective: PhD data scientist migrating from Transolver v1 on Azure ML to dist
 
 ## HIGH Risk (Blockers)
 
-### 1. AWS-only — no Azure support
+### 1. ~~AWS-only — no Azure support~~ DONE
 
-- `databricks.yml` hardcodes AWS instance types (`g5.12xlarge`, `p4d.24xlarge`) and workspace URLs
-- `training_workflow.yml` has `aws_attributes: availability: ON_DEMAND`
-- No Azure equivalents documented (`Standard_NC24ads_A100_v4`, etc.)
-- A data scientist on Azure can't deploy without rewriting the DAB config
+Added Azure targets (`azure_a10`, `azure_a100`, `azure_a100_80`) to `databricks.yml` with mapped instance types. Removed `aws_attributes` from `training_workflow.yml` to make it cloud-agnostic.
 
 **Files:** `databricks.yml`, `resources/training_workflow.yml`
 
-### 2. No checkpoint resumption
+### 2. ~~No checkpoint resumption~~ DONE
 
-- Can load weights via `--checkpoint`, but optimizer state, scheduler state, and epoch number are lost
-- Training always restarts from epoch 0 with fresh optimizer momentum and LR schedule
-- For production runs (500+ epochs on 140M-point meshes), an interruption means starting over
-- This is the single biggest pain point for long training runs
+Added `--resume` flag that loads full training state (model + optimizer + scheduler + epoch + best_error). Training checkpoints saved every `--save_every` epochs (default: 10) to `{save_dir}/training_checkpoint.pt`. Resume continues from the exact epoch with correct LR schedule.
 
-**Files:** `Industrial-Scale-Benchmarks/exp_drivaer_ml_distributed.py`, `transolver3/amortized_training.py`
+**Files:** `Industrial-Scale-Benchmarks/exp_drivaer_ml_distributed.py`
 
-### 3. No early stopping
+### 3. ~~No early stopping~~ DONE
 
-- Training runs all epochs unconditionally, even if loss plateaus or diverges
-- Best model is saved on test error improvement, but compute isn't reclaimed
-- With 100 epochs at ~3.3s/epoch it's fine, but at 500 epochs on full DrivAerML this wastes significant GPU hours
+Added `--patience N` flag. Stops training if test error doesn't improve for N consecutive eval cycles (eval runs every 10 epochs). `--patience 0` (default) disables early stopping. Also refactored the eval block to reduce duplication between shard_eval and non-shard_eval paths.
 
 **Files:** `Industrial-Scale-Benchmarks/exp_drivaer_ml_distributed.py`
 
 ## MEDIUM Risk (Production friction)
 
-### 4. No data validation
+### 4. ~~No data validation~~ DONE
 
-- `.npz` files loaded with no schema enforcement — missing keys or shape mismatches crash at runtime, not at load time
-- No NaN/inf detection before training begins
-- No data versioning beyond timestamps in the metadata Delta table
+Added `validate_npz()` function that checks schema (required keys per field type), NaN/Inf detection, and coordinate dimensions. Dataset accepts `validate=True` to run validation at construction time. Data versioning remains a future improvement.
 
-**Files:** `Industrial-Scale-Benchmarks/dataset/drivaer_ml.py`, `transolver3/data_catalog.py`, `scripts/preprocess.py`
+**Files:** `Industrial-Scale-Benchmarks/dataset/drivaer_ml.py`
 
-### 5. Serving has no input validation or health checks
+### 5. ~~Serving has no input validation or health checks~~ DONE
 
-- `TransolverPyfunc.predict()` doesn't validate coordinate shapes or dtypes
-- No error handling — exceptions bubble up raw to the caller
-- No request timeout for large batches
-- Monitoring framework exists in `monitoring.py` but isn't wired into the serving endpoint
+Added input validation to `TransolverPyfunc.predict()`: checks for missing 'coordinates' key, validates shape (2D or 3D) and `space_dim` match, detects NaN/Inf, and wraps parse errors with clear messages. Monitoring integration and request timeouts remain future improvements.
 
-**Files:** `transolver3/serving.py`, `transolver3/monitoring.py`
+**Files:** `transolver3/serving.py`
 
-### 6. CI doesn't test deployment
+### 6. ~~CI doesn't test deployment~~ DONE
 
-- CI runs lint + 100 CPU tests — good for code quality
-- But no DAB bundle validation (`databricks bundle validate`)
-- No GPU tests, no distributed tests, no serving endpoint smoke test
-- A broken `training_workflow.yml` would pass CI
+Added `validate-dab` job to CI that installs the Databricks CLI and runs `databricks bundle validate` to catch YAML syntax errors in DAB configs. Uses a dummy host/token since validation only checks syntax, not workspace connectivity. GPU tests and endpoint smoke tests remain future improvements.
 
 **Files:** `.github/workflows/ci.yml`
 
 ## LOW Risk (Nice to have)
 
-### 7. No gradient accumulation
+### 7. ~~No gradient accumulation~~ DONE
 
-Effective batch size is fixed at `batch_size x world_size`. No `--gradient_accumulation_steps` flag.
+Added `--accumulation_steps N` flag. Loss is scaled by 1/N, gradients accumulate over N micro-batches before optimizer step. Effective batch = `batch_size x world_size x accumulation_steps`.
 
-### 8. No v1 to v3 migration guide
+### 8. ~~No v1 to v3 migration guide~~ DONE
 
-Experiments compare v1 vs v3 results (`experiments/COMPARE_v1v3.md`), but no docs on how to port a v1 training pipeline to v3.
+Added `SPECS/MIGRATION_V1_TO_V3.md` covering data format conversion, model config changes, training loop differences, inference API, Databricks deployment, and a migration checklist.
 
-### 9. Reproducibility is manual
+### 9. ~~Reproducibility is manual~~ DONE
 
-Seeds and configs are logged correctly to MLflow, but there's no single command to reproduce a past run from its MLflow run ID.
+Added `scripts/reproduce_run.py` that fetches params from an MLflow run ID and generates the exact CLI command to re-run training. Supports `--execute` to run it directly.
 
 ## What's already solid
 

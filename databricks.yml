@@ -9,7 +9,7 @@ variables:
     description: "GPU profile: a10g, a100_40, or a100_80"
     default: "a10g"
   node_type_id:
-    description: "AWS instance type for the GPU cluster"
+    description: "Instance type for the GPU cluster (AWS or Azure)"
     default: "g5.xlarge"
   catalog:
     description: "Unity Catalog name"
@@ -29,14 +29,20 @@ variables:
   num_gpus:
     description: "Number of GPUs for distributed training"
     default: "4"
+  cloud:
+    description: "Cloud provider: aws or azure"
+    default: "aws"
 
 targets:
-  # --- GPU profiles (benchmarks & single runs) ---
+  # =====================================================================
+  # AWS targets (e2-demo-field-eng)
+  # =====================================================================
   a10g:
     default: true
     workspace:
       host: https://e2-demo-field-eng.cloud.databricks.com/
     variables:
+      cloud: "aws"
       gpu_type: "a10g"
       node_type_id: "g5.12xlarge"
       num_gpus: "4"
@@ -48,6 +54,7 @@ targets:
     workspace:
       host: https://e2-demo-field-eng.cloud.databricks.com/
     variables:
+      cloud: "aws"
       gpu_type: "a100_40"
       node_type_id: "p4d.24xlarge"
       num_gpus: "8"
@@ -56,15 +63,54 @@ targets:
     workspace:
       host: https://e2-demo-field-eng.cloud.databricks.com/
     variables:
+      cloud: "aws"
       gpu_type: "a100_80"
       node_type_id: "p4de.24xlarge"
       num_gpus: "8"
 
-  # --- Pipeline environments ---
+  # =====================================================================
+  # Azure targets
+  # Instance mapping:
+  #   AWS g5.12xlarge  (4x A10G)  -> Azure Standard_NV72ads_A10_v5 (2x A10)
+  #   AWS p4d.24xlarge (8x A100)  -> Azure Standard_NC48ads_A100_v4 (2x A100)
+  #   AWS p4de.24xlarge(8x A100-80)-> Azure Standard_ND96asr_v4 (8x A100-80)
+  # Note: Azure GPU instance availability varies by region. Adjust as needed.
+  # =====================================================================
+  azure_a10:
+    workspace:
+      host: ${var.azure_workspace_host}
+    variables:
+      cloud: "azure"
+      gpu_type: "a10"
+      node_type_id: "Standard_NV72ads_A10_v5"
+      num_gpus: "2"
+
+  azure_a100:
+    workspace:
+      host: ${var.azure_workspace_host}
+    variables:
+      cloud: "azure"
+      gpu_type: "a100"
+      node_type_id: "Standard_NC48ads_A100_v4"
+      num_gpus: "2"
+
+  azure_a100_80:
+    workspace:
+      host: ${var.azure_workspace_host}
+    variables:
+      cloud: "azure"
+      gpu_type: "a100_80"
+      node_type_id: "Standard_ND96asr_v4"
+      num_gpus: "8"
+
+  # =====================================================================
+  # Pipeline environments (cloud-agnostic, set workspace host per env)
+  # =====================================================================
   dev:
     workspace:
       host: https://e2-demo-field-eng.cloud.databricks.com/
     variables:
+      cloud: "aws"
       gpu_type: "a10g"
       node_type_id: "g5.xlarge"
       catalog: "dev"
@@ -75,6 +121,7 @@ targets:
     workspace:
       host: https://e2-demo-field-eng.cloud.databricks.com/
     variables:
+      cloud: "aws"
       gpu_type: "a100_40"
       node_type_id: "p4d.24xlarge"
       catalog: "staging"
@@ -85,6 +132,7 @@ targets:
     workspace:
       host: https://e2-demo-field-eng.cloud.databricks.com/
     variables:
+      cloud: "aws"
       gpu_type: "a100_80"
       node_type_id: "p4de.24xlarge"
       catalog: "prod"

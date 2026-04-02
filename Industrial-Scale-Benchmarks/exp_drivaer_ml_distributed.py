@@ -74,6 +74,12 @@ def parse_args():
     parser.add_argument("--slice_num", type=int, default=64)
     parser.add_argument("--num_tiles", type=int, default=8)
     parser.add_argument("--grad_clip", type=float, default=1.0)
+    parser.add_argument(
+        "--accumulation_steps",
+        type=int,
+        default=1,
+        help="Gradient accumulation steps. Effective batch = batch_size * world_size * accumulation_steps.",
+    )
     parser.add_argument("--cache_chunk_size", type=int, default=100000)
     parser.add_argument("--decode_chunk_size", type=int, default=50000)
     parser.add_argument("--eval_only", action="store_true")
@@ -85,6 +91,26 @@ def parse_args():
         help="Path to file containing MLflow run_id. If set, loads model from MLflow instead of --checkpoint.",
     )
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--patience",
+        type=int,
+        default=0,
+        help="Early stopping patience: stop if test error doesn't improve for N eval cycles. "
+        "0 = disabled (default). Eval happens every 10 epochs, so --patience 5 = 50 epochs.",
+    )
+    parser.add_argument(
+        "--resume",
+        type=str,
+        default=None,
+        help="Path to full training checkpoint (model + optimizer + scheduler + epoch). "
+        "Resumes training from the saved epoch. Overrides --checkpoint.",
+    )
+    parser.add_argument(
+        "--save_every",
+        type=int,
+        default=10,
+        help="Save full training checkpoint every N epochs (default: 10).",
+    )
     parser.add_argument(
         "--no-shard-mesh",
         action="store_true",
@@ -141,30 +167,33 @@ def train_epoch(model, dataloader, optimizer, scheduler, sampler, args, device):
     model.train()
     total_loss = 0.0
     count = 0
+    accum = args.accumulation_steps
     x_key, t_key = get_field_key(args.field)
 
-    for batch in dataloader:
+    optimizer.zero_grad()
+    for step, batch in enumerate(dataloader):
         x = batch[x_key].to(device)
         target = batch[t_key].to(device)
-
-        optimizer.zero_grad()
 
         N = x.shape[1]
         indices = sampler.sample(N).to(device)
         x_sub = x[:, indices]
         target_sub = target[:, indices]
 
+        # Scale loss by accumulation steps so gradients average correctly
         pred = model(x_sub, num_tiles=args.num_tiles)
-        loss = relative_l2_loss(pred, target_sub)
+        loss = relative_l2_loss(pred, target_sub) / accum
         loss.backward()
         # DDP handles gradient all-reduce automatically on backward()
 
-        torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
-        optimizer.step()
-        scheduler.step()
-
-        total_loss += loss.item()
+        total_loss += loss.item() * accum  # unscale for logging
         count += 1
+
+        if (step + 1) % accum == 0 or (step + 1) == len(dataloader):
+            torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
+            optimizer.step()
+            scheduler.step()
+            optimizer.zero_grad()
 
     return total_loss / max(count, 1)
 
@@ -362,7 +391,19 @@ def main():
     # Each rank gets a unique seed for different random subsets
     mesh_sampler = AmortizedMeshSampler(local_subset_size, seed=args.seed + rank)
 
-    log(f"Training: {args.epochs} epochs, lr={scaled_lr:.1e} (scaled {world_size}x)")
+    # Resume from full training checkpoint (model + optimizer + scheduler + epoch)
+    start_epoch = 0
+    if args.resume and os.path.exists(args.resume):
+        log(f"Resuming from checkpoint: {args.resume}")
+        ckpt = torch.load(args.resume, map_location=device)
+        model.module.load_state_dict(ckpt["model"])
+        optimizer.load_state_dict(ckpt["optimizer"])
+        scheduler.load_state_dict(ckpt["scheduler"])
+        start_epoch = ckpt["epoch"] + 1
+        best_error = ckpt.get("best_error", float("inf"))
+        log(f"Resumed from epoch {ckpt['epoch']}, best_error={best_error:.4f}, continuing at epoch {start_epoch}")
+
+    log(f"Training: epochs {start_epoch+1}-{args.epochs}, lr={scaled_lr:.1e} (scaled {world_size}x)")
     log(f"Tiles: {args.num_tiles}, Cache chunks: {args.cache_chunk_size:,}")
 
     # --- MLflow tracking (rank 0 only) ---
@@ -395,42 +436,66 @@ def main():
             mlflow_run = None
 
     # --- Training loop ---
-    best_error = float("inf")
-    for epoch in range(args.epochs):
+    if start_epoch == 0:
+        best_error = float("inf")
+    evals_without_improvement = 0
+    for epoch in range(start_epoch, args.epochs):
         train_sampler.set_epoch(epoch)  # shuffle differently each epoch
         t0 = time.time()
         train_loss = train_epoch(model, train_loader, optimizer, scheduler, mesh_sampler, args, device)
         t1 = time.time()
 
         # Evaluate
-        if (epoch + 1) % 10 == 0 or epoch == args.epochs - 1:
+        did_eval = (epoch + 1) % 10 == 0 or epoch == args.epochs - 1
+        if did_eval:
             if args.shard_eval:
                 test_error = evaluate(model, test_loader, args, device, sharded=True)
+            elif is_main_process():
+                test_error = evaluate(model, test_loader, args, device, sharded=False)
+            else:
+                test_error = None
+
+            if is_main_process():
                 log(
                     f"Epoch {epoch + 1}/{args.epochs} | "
                     f"train_loss={train_loss:.6f} | "
                     f"test_L2={test_error:.4f} ({test_error * 100:.2f}%) | "
                     f"time={t1 - t0:.1f}s"
                 )
-                if is_main_process() and test_error < best_error:
+                if test_error < best_error:
                     best_error = test_error
+                    evals_without_improvement = 0
                     torch.save(model.module.state_dict(), os.path.join(args.save_dir, "best_model.pt"))
-            else:
-                if is_main_process():
-                    test_error = evaluate(model, test_loader, args, device, sharded=False)
-                    log(
-                        f"Epoch {epoch + 1}/{args.epochs} | "
-                        f"train_loss={train_loss:.6f} | "
-                        f"test_L2={test_error:.4f} ({test_error * 100:.2f}%) | "
-                        f"time={t1 - t0:.1f}s"
-                    )
-                    if test_error < best_error:
-                        best_error = test_error
-                        torch.save(model.module.state_dict(), os.path.join(args.save_dir, "best_model.pt"))
-                if dist.is_initialized():
-                    dist.barrier()
+                else:
+                    evals_without_improvement += 1
+
+            if dist.is_initialized():
+                dist.barrier()
+
+            # Early stopping (patience = number of eval cycles without improvement)
+            if args.patience > 0 and evals_without_improvement >= args.patience:
+                log(
+                    f"Early stopping at epoch {epoch + 1}: "
+                    f"no improvement for {args.patience} eval cycles"
+                )
+                break
         else:
             log(f"Epoch {epoch + 1}/{args.epochs} | train_loss={train_loss:.6f} | time={t1 - t0:.1f}s")
+
+        # Save full training checkpoint periodically (for resumption)
+        if is_main_process() and (epoch + 1) % args.save_every == 0:
+            ckpt_path = os.path.join(args.save_dir, "training_checkpoint.pt")
+            torch.save(
+                {
+                    "epoch": epoch,
+                    "model": model.module.state_dict(),
+                    "optimizer": optimizer.state_dict(),
+                    "scheduler": scheduler.state_dict(),
+                    "best_error": best_error,
+                },
+                ckpt_path,
+            )
+            log(f"Saved training checkpoint at epoch {epoch + 1} to {ckpt_path}")
 
         # Log metrics to MLflow (live, per-epoch)
         if mlflow_run and is_main_process():
