@@ -99,22 +99,48 @@ class TransolverPyfunc(mlflow.pyfunc.PythonModel if mlflow else object):
 
         Returns:
             numpy array of predictions (N, out_dim)
+
+        Raises:
+            ValueError: if input is missing 'coordinates', has wrong shape, or contains NaN/Inf
         """
         # Parse input
-        if hasattr(model_input, "to_dict"):
-            # pandas DataFrame
-            coords_raw = model_input["coordinates"].iloc[0]
-            if isinstance(coords_raw, str):
-                coords_raw = json.loads(coords_raw)
-            coords = np.array(coords_raw, dtype=np.float32)
-        elif isinstance(model_input, dict):
-            coords = np.array(model_input["coordinates"], dtype=np.float32)
-        else:
-            coords = np.array(model_input, dtype=np.float32)
+        try:
+            if hasattr(model_input, "to_dict"):
+                # pandas DataFrame
+                if "coordinates" not in model_input.columns:
+                    raise ValueError(f"DataFrame must have 'coordinates' column, got: {list(model_input.columns)}")
+                coords_raw = model_input["coordinates"].iloc[0]
+                if isinstance(coords_raw, str):
+                    coords_raw = json.loads(coords_raw)
+                coords = np.array(coords_raw, dtype=np.float32)
+            elif isinstance(model_input, dict):
+                if "coordinates" not in model_input:
+                    raise ValueError(f"Dict must have 'coordinates' key, got: {list(model_input.keys())}")
+                coords = np.array(model_input["coordinates"], dtype=np.float32)
+            else:
+                coords = np.array(model_input, dtype=np.float32)
+        except (json.JSONDecodeError, TypeError) as e:
+            raise ValueError(f"Failed to parse input coordinates: {e}") from e
 
-        # Ensure (B, N, space_dim) shape
+        # Validate shape
+        if coords.ndim not in (2, 3):
+            raise ValueError(f"Coordinates must be 2D (N, space_dim) or 3D (B, N, space_dim), got shape {coords.shape}")
+
         if coords.ndim == 2:
             coords = coords[np.newaxis, ...]
+
+        expected_dim = self.model.preprocess.linear_pre[0].in_features
+        if coords.shape[-1] != expected_dim:
+            raise ValueError(
+                f"Coordinates last dim must be {expected_dim} (space_dim), got {coords.shape[-1]}. "
+                f"Shape: {coords.shape}"
+            )
+
+        # Check for NaN/Inf
+        if np.any(np.isnan(coords)):
+            raise ValueError("Input coordinates contain NaN values")
+        if np.any(np.isinf(coords)):
+            raise ValueError("Input coordinates contain Inf values")
 
         x = torch.tensor(coords, dtype=torch.float32, device=self.device)
 

@@ -30,14 +30,11 @@ Added `validate_npz()` function that checks schema (required keys per field type
 
 **Files:** `Industrial-Scale-Benchmarks/dataset/drivaer_ml.py`
 
-### 5. Serving has no input validation or health checks
+### 5. ~~Serving has no input validation or health checks~~ DONE
 
-- `TransolverPyfunc.predict()` doesn't validate coordinate shapes or dtypes
-- No error handling — exceptions bubble up raw to the caller
-- No request timeout for large batches
-- Monitoring framework exists in `monitoring.py` but isn't wired into the serving endpoint
+Added input validation to `TransolverPyfunc.predict()`: checks for missing 'coordinates' key, validates shape (2D or 3D) and `space_dim` match, detects NaN/Inf, and wraps parse errors with clear messages. Monitoring integration and request timeouts remain future improvements.
 
-**Files:** `transolver3/serving.py`, `transolver3/monitoring.py`
+**Files:** `transolver3/serving.py`
 
 ### 6. CI doesn't test deployment
 
