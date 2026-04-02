@@ -16,6 +16,57 @@ import torch
 import numpy as np
 from torch.utils.data import Dataset
 
+# Expected keys per field type
+_SURFACE_KEYS = {"surface_coords", "surface_normals", "surface_pressure", "surface_wall_shear"}
+_VOLUME_KEYS = {"volume_coords", "volume_velocity", "volume_pressure"}
+_REQUIRED_KEYS = {"params"}
+
+
+def validate_npz(path, field="surface"):
+    """Validate a DrivAerML .npz file for schema and data quality.
+
+    Args:
+        path: path to .npz file
+        field: 'surface', 'volume', or 'both'
+
+    Returns:
+        list of error strings (empty = valid)
+    """
+    errors = []
+    try:
+        data = np.load(path, allow_pickle=True, mmap_mode="r")
+    except Exception as e:
+        return [f"Cannot load {path}: {e}"]
+
+    # Check required keys
+    required = set(_REQUIRED_KEYS)
+    if field in ("surface", "both"):
+        required |= _SURFACE_KEYS
+    if field in ("volume", "both"):
+        required |= _VOLUME_KEYS
+
+    missing = required - set(data.keys())
+    if missing:
+        errors.append(f"Missing keys: {sorted(missing)}")
+
+    # Check for NaN/Inf in available arrays
+    for key in data.keys():
+        arr = data[key]
+        if arr.dtype in (np.float32, np.float64):
+            # Sample a slice to avoid reading entire mmap'd file
+            sample = np.array(arr[:min(1000, arr.shape[0])])
+            if np.any(np.isnan(sample)):
+                errors.append(f"NaN detected in {key}")
+            if np.any(np.isinf(sample)):
+                errors.append(f"Inf detected in {key}")
+
+    # Check coordinate dimensions
+    for key in ("surface_coords", "volume_coords"):
+        if key in data and data[key].ndim == 2 and data[key].shape[1] != 3:
+            errors.append(f"{key} has {data[key].shape[1]} dims, expected 3")
+
+    return errors
+
 
 class DrivAerMLDataset(Dataset):
     """DrivAerML surface + volume dataset.
@@ -56,6 +107,7 @@ class DrivAerMLDataset(Dataset):
         lazy_load=True,
         shard_id=None,
         num_shards=None,
+        validate=False,
     ):
         self.data_dir = data_dir
         self.split = split
@@ -73,6 +125,13 @@ class DrivAerMLDataset(Dataset):
                 self.samples = [line.strip() for line in f if line.strip()]
         else:
             self.samples = sorted([f for f in os.listdir(data_dir) if f.endswith((".npz", ".h5"))])
+
+        if validate:
+            for sample in self.samples:
+                path = os.path.join(data_dir, sample)
+                errors = validate_npz(path, field=field)
+                if errors:
+                    raise ValueError(f"Validation failed for {sample}: {errors}")
 
     def __len__(self):
         return len(self.samples)

@@ -24,13 +24,11 @@ Added `--patience N` flag. Stops training if test error doesn't improve for N co
 
 ## MEDIUM Risk (Production friction)
 
-### 4. No data validation
+### 4. ~~No data validation~~ DONE
 
-- `.npz` files loaded with no schema enforcement — missing keys or shape mismatches crash at runtime, not at load time
-- No NaN/inf detection before training begins
-- No data versioning beyond timestamps in the metadata Delta table
+Added `validate_npz()` function that checks schema (required keys per field type), NaN/Inf detection, and coordinate dimensions. Dataset accepts `validate=True` to run validation at construction time. Data versioning remains a future improvement.
 
-**Files:** `Industrial-Scale-Benchmarks/dataset/drivaer_ml.py`, `transolver3/data_catalog.py`, `scripts/preprocess.py`
+**Files:** `Industrial-Scale-Benchmarks/dataset/drivaer_ml.py`
 
 ### 5. Serving has no input validation or health checks
 
