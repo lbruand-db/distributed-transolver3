@@ -86,6 +86,13 @@ def parse_args():
     )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
+        "--patience",
+        type=int,
+        default=0,
+        help="Early stopping patience: stop if test error doesn't improve for N eval cycles. "
+        "0 = disabled (default). Eval happens every 10 epochs, so --patience 5 = 50 epochs.",
+    )
+    parser.add_argument(
         "--resume",
         type=str,
         default=None,
@@ -422,6 +429,7 @@ def main():
     # --- Training loop ---
     if start_epoch == 0:
         best_error = float("inf")
+    evals_without_improvement = 0
     for epoch in range(start_epoch, args.epochs):
         train_sampler.set_epoch(epoch)  # shuffle differently each epoch
         t0 = time.time()
@@ -429,32 +437,39 @@ def main():
         t1 = time.time()
 
         # Evaluate
-        if (epoch + 1) % 10 == 0 or epoch == args.epochs - 1:
+        did_eval = (epoch + 1) % 10 == 0 or epoch == args.epochs - 1
+        if did_eval:
             if args.shard_eval:
                 test_error = evaluate(model, test_loader, args, device, sharded=True)
+            elif is_main_process():
+                test_error = evaluate(model, test_loader, args, device, sharded=False)
+            else:
+                test_error = None
+
+            if is_main_process():
                 log(
                     f"Epoch {epoch + 1}/{args.epochs} | "
                     f"train_loss={train_loss:.6f} | "
                     f"test_L2={test_error:.4f} ({test_error * 100:.2f}%) | "
                     f"time={t1 - t0:.1f}s"
                 )
-                if is_main_process() and test_error < best_error:
+                if test_error < best_error:
                     best_error = test_error
+                    evals_without_improvement = 0
                     torch.save(model.module.state_dict(), os.path.join(args.save_dir, "best_model.pt"))
-            else:
-                if is_main_process():
-                    test_error = evaluate(model, test_loader, args, device, sharded=False)
-                    log(
-                        f"Epoch {epoch + 1}/{args.epochs} | "
-                        f"train_loss={train_loss:.6f} | "
-                        f"test_L2={test_error:.4f} ({test_error * 100:.2f}%) | "
-                        f"time={t1 - t0:.1f}s"
-                    )
-                    if test_error < best_error:
-                        best_error = test_error
-                        torch.save(model.module.state_dict(), os.path.join(args.save_dir, "best_model.pt"))
-                if dist.is_initialized():
-                    dist.barrier()
+                else:
+                    evals_without_improvement += 1
+
+            if dist.is_initialized():
+                dist.barrier()
+
+            # Early stopping (patience = number of eval cycles without improvement)
+            if args.patience > 0 and evals_without_improvement >= args.patience:
+                log(
+                    f"Early stopping at epoch {epoch + 1}: "
+                    f"no improvement for {args.patience} eval cycles"
+                )
+                break
         else:
             log(f"Epoch {epoch + 1}/{args.epochs} | train_loss={train_loss:.6f} | time={t1 - t0:.1f}s")
 

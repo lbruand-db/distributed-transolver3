@@ -16,11 +16,9 @@ Added `--resume` flag that loads full training state (model + optimizer + schedu
 
 **Files:** `Industrial-Scale-Benchmarks/exp_drivaer_ml_distributed.py`
 
-### 3. No early stopping
+### 3. ~~No early stopping~~ DONE
 
-- Training runs all epochs unconditionally, even if loss plateaus or diverges
-- Best model is saved on test error improvement, but compute isn't reclaimed
-- With 100 epochs at ~3.3s/epoch it's fine, but at 500 epochs on full DrivAerML this wastes significant GPU hours
+Added `--patience N` flag. Stops training if test error doesn't improve for N consecutive eval cycles (eval runs every 10 epochs). `--patience 0` (default) disables early stopping. Also refactored the eval block to reduce duplication between shard_eval and non-shard_eval paths.
 
 **Files:** `Industrial-Scale-Benchmarks/exp_drivaer_ml_distributed.py`
 
