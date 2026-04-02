@@ -45,6 +45,7 @@ from dataset.drivaer_ml import DrivAerMLDataset
 # Optional MLflow integration (guarded import)
 try:
     import mlflow
+    import mlflow.pytorch
     from transolver3.mlflow_utils import log_training_run, log_model_with_signature
 
     _HAS_MLFLOW = True
@@ -120,6 +121,15 @@ def log(msg):
     """Print only on rank 0."""
     if is_main_process():
         print(msg, flush=True)
+
+
+def logall(msg):
+    """Print on all ranks with rank prefix."""
+    try:
+        rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else 0
+    except Exception:
+        rank = 0
+    print(f"[rank {rank}] {msg}", flush=True)
 
 
 def train_epoch(model, dataloader, optimizer, scheduler, sampler, args, device):
@@ -219,11 +229,14 @@ def evaluate(model, dataloader, args, device, sharded=False):
 
 
 def main():
+    logall(f"main() entered (pid={os.getpid()})")
     args = parse_args()
+    logall("args parsed, calling setup_distributed()")
 
     # --- Distributed setup ---
     rank, world_size = setup_distributed()
     device = get_device()
+    logall(f"distributed setup done: device={device}")
     log(f"Distributed: {world_size} workers, device={device}")
 
     if is_main_process():
@@ -240,6 +253,7 @@ def main():
     log(f"Mesh sharding: {shard_msg}")
 
     # --- Datasets ---
+    logall("Creating train dataset...")
     train_dataset = DrivAerMLDataset(
         args.data_dir,
         split="train",
@@ -248,6 +262,7 @@ def main():
         shard_id=rank if shard_mesh else None,
         num_shards=world_size if shard_mesh else None,
     )
+    logall(f"Train dataset: {len(train_dataset)} samples")
     # Test dataset: sharded if --shard-eval, otherwise full mesh on rank 0
     test_dataset = DrivAerMLDataset(
         args.data_dir,
@@ -257,6 +272,7 @@ def main():
         shard_id=rank if args.shard_eval else None,
         num_shards=world_size if args.shard_eval else None,
     )
+    logall(f"Test dataset: {len(test_dataset)} samples")
 
     # DistributedSampler ensures each rank sees different samples when
     # there are multiple samples in the dataset
@@ -274,7 +290,12 @@ def main():
     test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False)
 
     # --- Model ---
+    logall("Loading first sample to infer dimensions...")
     sample = train_dataset[0]
+    logall("First sample loaded, waiting at barrier...")
+    if dist.is_initialized():
+        dist.barrier()
+    logall("Barrier passed, creating model...")
     x_key, t_key = get_field_key(args.field)
     space_dim = sample[x_key].shape[-1]
     out_dim = sample[t_key].shape[-1]
@@ -291,9 +312,12 @@ def main():
         dropout=0.0,
         num_tiles=args.num_tiles,
     ).to(device)
+    logall(f"Model created on {device}")
 
     # Wrap in DDP — gradient all-reduce is automatic on backward()
+    logall("Wrapping in DDP...")
     model = DDP(model, device_ids=[device] if device.type == "cuda" else None)
+    logall("DDP ready")
 
     n_params = sum(p.numel() for p in model.parameters())
     log(f"Model parameters: {n_params:,}")
@@ -303,8 +327,6 @@ def main():
         with open(args.mlflow_run_id_file) as f:
             run_id = f.read().strip()
         log(f"Loading model from MLflow run: {run_id}")
-        import mlflow.pytorch
-
         loaded_model = mlflow.pytorch.load_model(f"runs:/{run_id}/transolver3", map_location=device)
         model.module.load_state_dict(loaded_model.state_dict())
         log(f"Loaded model from MLflow run {run_id}")

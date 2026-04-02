@@ -4,15 +4,14 @@ Run via DAB:
     databricks bundle run test_register -t a10g --profile DEFAULT
 """
 
+import argparse
 import os
 import sys
 
+import torch
+
 _this_dir = os.path.dirname(os.path.abspath(__file__)) if "__file__" in dir() else os.getcwd()
 sys.path.insert(0, os.path.join(_this_dir, ".."))
-
-import argparse
-
-import torch
 
 
 def main():

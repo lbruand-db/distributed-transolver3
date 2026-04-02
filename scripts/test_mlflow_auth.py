@@ -25,7 +25,9 @@ def child_process_test():
     world_size = dist.get_world_size() if dist.is_initialized() else 1
 
     print(f"[rank {rank}] DATABRICKS_HOST = {os.environ.get('DATABRICKS_HOST', '<NOT SET>')}")
-    print(f"[rank {rank}] DATABRICKS_TOKEN = {'***' + os.environ.get('DATABRICKS_TOKEN', '')[-4:] if os.environ.get('DATABRICKS_TOKEN') else '<NOT SET>'}")
+    token = os.environ.get("DATABRICKS_TOKEN", "")
+    token_display = f"***{token[-4:]}" if token else "<NOT SET>"
+    print(f"[rank {rank}] DATABRICKS_TOKEN = {token_display}")
 
     # Only rank 0 tests MLflow
     if rank == 0:

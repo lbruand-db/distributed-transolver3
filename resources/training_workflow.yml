@@ -44,7 +44,7 @@ resources:
               - "--num-gpus"
               - "${var.num_gpus}"
               - "--epochs"
-              - "2"
+              - "100"
               - "--save_dir"
               - "${var.data_volume_path}/checkpoints"
           new_cluster:
@@ -52,12 +52,17 @@ resources:
             node_type_id: ${var.node_type_id}
             num_workers: 0
             data_security_mode: "SINGLE_USER"
+            aws_attributes:
+              availability: "ON_DEMAND"
             spark_conf:
               spark.databricks.cluster.profile: "singleNode"
               spark.master: "local[*]"
               spark.task.resource.gpu.amount: "${var.num_gpus}"
             spark_env_vars:
               PYTHONPATH: "${workspace.file_path}:${workspace.file_path}/Industrial-Scale-Benchmarks"
+              NCCL_DEBUG: "WARN"
+              NCCL_P2P_DISABLE: "1"
+              NCCL_ASYNC_ERROR_HANDLING: "1"
             custom_tags:
               ResourceClass: "SingleNode"
           libraries:
