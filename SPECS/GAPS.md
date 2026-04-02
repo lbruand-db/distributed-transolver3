@@ -36,12 +36,9 @@ Added input validation to `TransolverPyfunc.predict()`: checks for missing 'coor
 
 **Files:** `transolver3/serving.py`
 
-### 6. CI doesn't test deployment
+### 6. ~~CI doesn't test deployment~~ DONE
 
-- CI runs lint + 100 CPU tests — good for code quality
-- But no DAB bundle validation (`databricks bundle validate`)
-- No GPU tests, no distributed tests, no serving endpoint smoke test
-- A broken `training_workflow.yml` would pass CI
+Added `validate-dab` job to CI that installs the Databricks CLI and runs `databricks bundle validate` to catch YAML syntax errors in DAB configs. Uses a dummy host/token since validation only checks syntax, not workspace connectivity. GPU tests and endpoint smoke tests remain future improvements.
 
 **Files:** `.github/workflows/ci.yml`
 
