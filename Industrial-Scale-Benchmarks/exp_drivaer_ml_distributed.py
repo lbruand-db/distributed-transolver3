@@ -267,6 +267,12 @@ def main():
     args = parse_args()
     logall("args parsed, calling setup_distributed()")
 
+    # --- Reproducibility ---
+    torch.manual_seed(args.seed)
+    torch.cuda.manual_seed_all(args.seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
     # --- Distributed setup ---
     rank, world_size = setup_distributed()
     device = get_device()
@@ -295,6 +301,7 @@ def main():
         subset_size=local_subset_size,
         shard_id=rank if shard_mesh else None,
         num_shards=world_size if shard_mesh else None,
+        seed=args.seed + rank,
     )
     logall(f"Train dataset: {len(train_dataset)} samples")
     # Test dataset: sharded if --shard-eval, otherwise full mesh on rank 0
@@ -429,6 +436,7 @@ def main():
                     "num_tiles": args.num_tiles,
                     "world_size": world_size,
                     "shard_mesh": shard_mesh,
+                    "seed": args.seed,
                 },
             )
         except Exception as e:

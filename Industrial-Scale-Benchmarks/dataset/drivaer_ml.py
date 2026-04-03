@@ -108,6 +108,7 @@ class DrivAerMLDataset(Dataset):
         shard_id=None,
         num_shards=None,
         validate=False,
+        seed=None,
     ):
         self.data_dir = data_dir
         self.split = split
@@ -118,6 +119,8 @@ class DrivAerMLDataset(Dataset):
         self.lazy_load = lazy_load
         self.shard_id = shard_id
         self.num_shards = num_shards
+        self.seed = seed
+        self._call_count = 0
 
         split_file = os.path.join(data_dir, f"{split}.txt")
         if os.path.exists(split_file):
@@ -166,7 +169,14 @@ class DrivAerMLDataset(Dataset):
         N = tensors[0].shape[0]
         if N <= self.subset_size:
             return tensors
-        indices = torch.randperm(N)[: self.subset_size]
+        if self.seed is not None:
+            # Deterministic: seed derived from base seed + call count
+            g = torch.Generator()
+            g.manual_seed(self.seed + self._call_count)
+            self._call_count += 1
+            indices = torch.randperm(N, generator=g)[: self.subset_size]
+        else:
+            indices = torch.randperm(N)[: self.subset_size]
         return tuple(t[indices] for t in tensors)
 
     def __getitem__(self, idx):
