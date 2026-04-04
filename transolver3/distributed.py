@@ -11,6 +11,8 @@ Or via Databricks TorchDistributor.
 """
 
 import os
+import time
+
 import torch
 import torch.distributed as dist
 
@@ -65,6 +67,26 @@ def get_device():
     if torch.cuda.is_available():
         return torch.device(f"cuda:{get_local_rank()}")
     return torch.device("cpu")
+
+
+def _ts():
+    """Compact timestamp for log lines."""
+    return time.strftime("%H:%M:%S")
+
+
+def log(msg):
+    """Print only on rank 0."""
+    if is_main_process():
+        print(f"[{_ts()}] {msg}", flush=True)
+
+
+def logall(msg):
+    """Print on all ranks with rank prefix (falls back to PID before dist init)."""
+    if dist.is_initialized():
+        prefix = f"rank {dist.get_rank()}"
+    else:
+        prefix = f"pid {os.getpid()}"
+    print(f"[{_ts()}] [{prefix}] {msg}", flush=True)
 
 
 def unwrap_ddp_model(model):

@@ -39,6 +39,8 @@ from transolver3.distributed import (
     cleanup,
     is_main_process,
     get_device,
+    log,
+    logall,
 )
 from dataset.drivaer_ml import DrivAerMLDataset
 
@@ -141,26 +143,6 @@ def parse_args():
 
 def get_field_key(field):
     return f"{field}_x", f"{field}_target"
-
-
-def _ts():
-    """Compact timestamp for log lines."""
-    return time.strftime("%H:%M:%S")
-
-
-def log(msg):
-    """Print only on rank 0."""
-    if is_main_process():
-        print(f"[{_ts()}] {msg}", flush=True)
-
-
-def logall(msg):
-    """Print on all ranks with rank prefix (falls back to PID before dist init)."""
-    if torch.distributed.is_initialized():
-        prefix = f"rank {torch.distributed.get_rank()}"
-    else:
-        prefix = f"pid {os.getpid()}"
-    print(f"[{_ts()}] [{prefix}] {msg}", flush=True)
 
 
 def train_epoch(model, dataloader, optimizer, scheduler, sampler, args, device):
