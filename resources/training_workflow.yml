@@ -47,6 +47,7 @@ resources:
               - "500"
               - "--patience"
               - "5"
+              - "--shard-eval"
               - "--save_dir"
               - "${var.data_volume_path}/checkpoints"
           new_cluster:
