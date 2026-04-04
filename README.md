@@ -49,68 +49,32 @@ databricks bundle deploy -t a100_40    # 8x A100 40GB
 databricks bundle deploy -t a100_80    # 8x A100 80GB
 ```
 
-## Get Started
+## DAB Training Pipeline
 
-All code runs in **Databricks notebooks** on GPU clusters. Data lives in **UC Volumes**.
+The full pipeline runs 5 sequential tasks, each on its own cluster. MLflow is the single source of truth for model artifacts — no checkpoint files are passed between tasks.
 
-```python
-# Cell 1: Setup
-%pip install /Workspace/Repos/<user>/Transolver -q
-dbutils.library.restartPython()
+```bash
+databricks bundle deploy -t a10g
+databricks bundle run transolver3_training_pipeline
 ```
 
-```python
-# Cell 2: Imports + model creation
-import mlflow
-import torch
-import numpy as np
-from transolver3 import Transolver3, CachedInference
-from transolver3.amortized_training import train_step, create_optimizer, create_scheduler, AmortizedMeshSampler
+| Task | Cluster | What it does |
+|------|---------|------|
+| **preprocess** | i3.xlarge (CPU) | Register mesh metadata + compute stats in Delta |
+| **train** | g5.12xlarge (4x A10G) | Mesh-sharded DDP training via TorchDistributor, live MLflow metrics |
+| **evaluate** | g5.12xlarge (4x A10G) | Load model from MLflow run, run cached inference on test set |
+| **register** | i3.xlarge (CPU) | Promote already-logged model to UC Model Registry |
+| **deploy** | i3.xlarge (CPU) | Create/update Model Serving endpoint with scale-to-zero |
 
-device = torch.device("cuda")
-model = Transolver3(
-    space_dim=3, n_layers=24, n_hidden=256, n_head=8,
-    fun_dim=0, out_dim=4, slice_num=64,
-    tile_size=100_000,       # auto-compute tiles (paper Table 5)
-    mlp_chunk_size=100_000,  # tile MLP for large N
-).to(device)
-```
+The train task uses `TorchDistributor(local_mode=True)` to launch torchrun on a single multi-GPU node. Each GPU loads a disjoint 1/K shard of the mesh via mmap range reads. Gradients are all-reduced via NCCL. See [SPECS/DISTRIBUTED_ARCHITECTURE.md](SPECS/DISTRIBUTED_ARCHITECTURE.md) for Mermaid diagrams of the full architecture.
 
-```python
-# Cell 3: Load data from UC Volumes
-VOLUME_PATH = "/Volumes/ml/transolver3/data"
-data = np.load(f"{VOLUME_PATH}/drivaer_001.npz", mmap_mode='r')
-x = torch.tensor(data["coordinates"], dtype=torch.float32).unsqueeze(0).to(device)
-y = torch.tensor(data["targets"], dtype=torch.float32).unsqueeze(0).to(device)
-```
+### Other DAB jobs
 
-```python
-# Cell 4: Training with mixed precision + MLflow tracking
-optimizer = create_optimizer(model)
-scheduler = create_scheduler(optimizer, total_steps=50000)
-scaler = torch.amp.GradScaler()
-sampler = AmortizedMeshSampler(subset_size=100_000, seed=42)
-
-mlflow.set_experiment("/Shared/transolver3-experiments")
-
-with mlflow.start_run(run_name="drivaer-ml-24L-256H"):
-    mlflow.log_params({
-        "n_layers": 24, "n_hidden": 256, "n_head": 8,
-        "slice_num": 64, "tile_size": 100_000,
-    })
-
-    for step in range(50000):
-        loss = train_step(model, x, None, y, optimizer, scheduler,
-                          sampler=sampler, tile_size=100_000, scaler=scaler)
-        if step % 100 == 0:
-            mlflow.log_metric("train_loss", loss, step=step)
-```
-
-```python
-# Cell 5: Inference on industrial-scale meshes (160M+ cells)
-model.eval()
-engine = CachedInference(model, cache_chunk_size=100_000, decode_chunk_size=50_000)
-output = engine.predict(x_full_mesh)
+```bash
+databricks bundle run gpu_memory_benchmark          # Single-GPU memory sweep
+databricks bundle run distributed_sharded_test      # 2-GPU validation
+databricks bundle run test_mlflow_auth              # Smoke test MLflow auth in child processes
+databricks bundle run test_register_deploy          # Serverless register + deploy (fast iteration)
 ```
 
 ## Claude Skills (Newcomer Guide)
@@ -229,34 +193,6 @@ distribution across multiple GPUs. Each GPU loads only 1/K of the mesh via mmap
 range reads. The key insight: the slice accumulators `s_raw (B,H,M,C)` are
 **additive** — they can be independently computed from disjoint mesh partitions
 and all-reduced (~514 KB per layer).
-
-### Via DAB Training Pipeline
-
-The full pipeline runs 5 sequential tasks, each on its own cluster. MLflow is the single source of truth for model artifacts — no checkpoint files are passed between tasks.
-
-```bash
-databricks bundle deploy -t a10g
-databricks bundle run transolver3_training_pipeline
-```
-
-| Task | Cluster | What it does |
-|------|---------|------|
-| **preprocess** | i3.xlarge (CPU) | Register mesh metadata + compute stats in Delta |
-| **train** | g5.12xlarge (4x A10G) | Mesh-sharded DDP training via TorchDistributor, live MLflow metrics |
-| **evaluate** | g5.12xlarge (4x A10G) | Load model from MLflow run, run cached inference on test set |
-| **register** | i3.xlarge (CPU) | Promote already-logged model to UC Model Registry |
-| **deploy** | i3.xlarge (CPU) | Create/update Model Serving endpoint with scale-to-zero |
-
-The train task uses `TorchDistributor(local_mode=True)` to launch torchrun on a single multi-GPU node. Each GPU loads a disjoint 1/K shard of the mesh via mmap range reads. Gradients are all-reduced via NCCL. See [SPECS/DISTRIBUTED_ARCHITECTURE.md](SPECS/DISTRIBUTED_ARCHITECTURE.md) for Mermaid diagrams of the full architecture.
-
-### Other DAB jobs
-
-```bash
-databricks bundle run gpu_memory_benchmark          # Single-GPU memory sweep
-databricks bundle run distributed_sharded_test      # 2-GPU validation
-databricks bundle run test_mlflow_auth              # Smoke test MLflow auth in child processes
-databricks bundle run test_register_deploy          # Serverless register + deploy (fast iteration)
-```
 
 Validated on 4x NVIDIA A10G: sharded cache and decode produce **zero numerical difference** vs single-GPU. See [SPECS/DISTRIBUTED.md](SPECS/DISTRIBUTED.md) for the original design.
 
