@@ -165,4 +165,5 @@ data/
 .idea/
 *.pdf
 *.ldr
+*.cast
 .venv/
