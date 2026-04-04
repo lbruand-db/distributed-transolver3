@@ -23,6 +23,21 @@ except ImportError:
     mlflow = None
 
 
+def _load_normalizer_state(normalizer, artifact_path, device):
+    """Load a normalizer from a saved state dict, resizing buffers as needed.
+
+    Returns the loaded normalizer on the given device, or None if artifact_path is None.
+    """
+    if artifact_path is None:
+        return None
+    state = torch.load(artifact_path, weights_only=True)
+    for k, v in state.items():
+        if hasattr(normalizer, k):
+            setattr(normalizer, k, torch.zeros_like(v))
+    normalizer.load_state_dict(state)
+    return normalizer.to(device)
+
+
 class TransolverPyfunc(mlflow.pyfunc.PythonModel if mlflow else object):
     """MLflow pyfunc wrapper for Transolver-3 cached inference.
 
@@ -66,27 +81,12 @@ class TransolverPyfunc(mlflow.pyfunc.PythonModel if mlflow else object):
         )
 
         # Load normalizers (optional)
-        self.input_norm = None
-        self.target_norm = None
-
-        if "input_normalizer" in context.artifacts:
-            self.input_norm = InputNormalizer(per_sample=False)
-            state = torch.load(context.artifacts["input_normalizer"], weights_only=True)
-            # Resize buffers to match saved shapes before loading
-            for k, v in state.items():
-                if hasattr(self.input_norm, k):
-                    setattr(self.input_norm, k, torch.zeros_like(v))
-            self.input_norm.load_state_dict(state)
-            self.input_norm = self.input_norm.to(self.device)
-
-        if "target_normalizer" in context.artifacts:
-            self.target_norm = TargetNormalizer()
-            state = torch.load(context.artifacts["target_normalizer"], weights_only=True)
-            for k, v in state.items():
-                if hasattr(self.target_norm, k):
-                    setattr(self.target_norm, k, torch.zeros_like(v))
-            self.target_norm.load_state_dict(state)
-            self.target_norm = self.target_norm.to(self.device)
+        self.input_norm = _load_normalizer_state(
+            InputNormalizer(per_sample=False), context.artifacts.get("input_normalizer"), self.device
+        )
+        self.target_norm = _load_normalizer_state(
+            TargetNormalizer(), context.artifacts.get("target_normalizer"), self.device
+        )
 
     def predict(self, context, model_input):
         """Run cached inference on input coordinates.
