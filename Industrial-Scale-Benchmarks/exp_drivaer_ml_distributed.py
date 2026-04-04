@@ -502,6 +502,8 @@ def main():
         if mlflow_run and is_main_process():
             mlflow.log_metric("train_loss", train_loss, step=epoch)
             mlflow.log_metric("epoch_time_s", t1 - t0, step=epoch)
+            if did_eval and test_error is not None:
+                mlflow.log_metric("test_l2", test_error, step=epoch)
 
     log(f"\nBest test relative L2 error: {best_error:.4f} ({best_error * 100:.2f}%)")
 
