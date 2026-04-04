@@ -186,13 +186,9 @@ results = benchmark_scaling(model, mesh_sizes=[1000, 10000, 100000],
 print(format_benchmark_table(results))
 ```
 
-## Distributed Training (Huge Meshes >100 GB)
+## Multi-GPU Distribution
 
-For meshes that exceed single-node memory, Transolver-3 supports mesh-sharded
-distribution across multiple GPUs. Each GPU loads only 1/K of the mesh via mmap
-range reads. The key insight: the slice accumulators `s_raw (B,H,M,C)` are
-**additive** — they can be independently computed from disjoint mesh partitions
-and all-reduced (~514 KB per layer).
+Transolver-3 already handles industrial-scale meshes on a single GPU via amortized subsampling and tiled attention. Multi-GPU distribution shards the mesh across GPUs to parallelize computation and reduce wall-clock time. Each GPU processes 1/K of the mesh independently; the slice accumulators `s_raw (B,H,M,C)` are **additive** and all-reduced (~514 KB/layer).
 
 Validated on 4x NVIDIA A10G: sharded cache and decode produce **zero numerical difference** vs single-GPU. See [SPECS/DISTRIBUTED.md](SPECS/DISTRIBUTED.md) for the original design.
 
