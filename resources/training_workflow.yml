@@ -44,7 +44,7 @@ resources:
               - "--num-gpus"
               - "${var.num_gpus}"
               - "--epochs"
-              - "100"
+              - "500"
               - "--save_dir"
               - "${var.data_volume_path}/checkpoints"
           new_cluster:
