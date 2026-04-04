@@ -13,10 +13,10 @@ Based on the [Transolver paper](https://arxiv.org/abs/2402.02366) (ICML 2024 Spo
 
 ## Context
 
-🌊 Traditional CFD solves Navier-Stokes on fine meshes using HPC clusters — a single DrivAerML car aerodynamics run with 140M cells takes hours on hundreds of CPU cores.
-🧠 **Transolver** replaces the iterative PDE solver with a transformer that learns the physics directly from data, predicting pressure, velocity, and other fields in a single forward pass.
-🔬 Transolver-3 scales this to industrial-scale meshes (100M+ cells) through physics-aware attention in a compressed "slice domain" of only 64 slices.
-⚡ The result: 10-100× faster than classical solvers at engineering-grade accuracy.
+<p>🌊 Traditional CFD solves Navier-Stokes on fine meshes using HPC clusters — a single DrivAerML car aerodynamics run with 140M cells takes hours on hundreds of CPU cores.</p>
+<p>🧠 <b>Transolver</b> replaces the iterative PDE solver with a transformer that learns the physics directly from data, predicting pressure, velocity, and other fields in a single forward pass.</p>
+<p>🔬 Transolver-3 scales this to industrial-scale meshes (100M+ cells) through physics-aware attention in a compressed "slice domain" of only 64 slices.</p>
+<p>⚡ The result: 10-100× faster than classical solvers at engineering-grade accuracy.</p>
 
 <p align="center">
 <img src="./experiments/results/drivaer_pressure_sideview.png" height="200" alt="DrivAerML pressure comparison" align=center />
