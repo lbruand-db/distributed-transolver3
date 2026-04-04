@@ -21,7 +21,7 @@ Based on the [Transolver paper](https://arxiv.org/abs/2402.02366) (ICML 2024 Spo
 6. **Mesh-Sharded Distribution** — Shard meshes >100 GB across GPUs; all-reduce only the tiny slice accumulators (~514 KB/layer)
 
 <p align="center">
-<img src="./pic/Transolver.png" height="250" alt="" align=center />
+<img src="./experiments/results/drivaer_pressure_sideview.png" height="200" alt="DrivAerML pressure comparison" align=center />
 </p>
 
 ## Setup on Databricks
