@@ -214,7 +214,7 @@ class Transolver3(nn.Module):
         return cache
 
     @torch.no_grad()
-    def _cache_chunked(self, x, fx, T, num_tiles, chunk_size):
+    def _cache_chunked(self, x, fx, T, num_tiles, chunk_size, accumulator_hook=None):
         """Cache states by streaming chunks through the model.
 
         Fix #4: Instead of storing all preprocessed features on GPU,
@@ -223,6 +223,11 @@ class Transolver3(nn.Module):
 
         Memory: O(chunk_size * hidden_dim) GPU + O(N * hidden_dim) CPU
         instead of O(N * hidden_dim) GPU.
+
+        Args:
+            accumulator_hook: optional callable(s_raw_accum, d_accum) -> (s_raw, d).
+                Used by distributed inference to all-reduce accumulators before
+                finalizing the cached state.
         """
         B, N, _ = x.shape
         num_chunks = math.ceil(N / chunk_size)
@@ -255,6 +260,10 @@ class Transolver3(nn.Module):
                     s_raw_accum = s_raw_accum + s_raw_k
                     d_accum = d_accum + d_k
                 del chunk_fx_gpu  # free GPU memory
+
+            # Hook for distributed all-reduce of accumulators
+            if accumulator_hook is not None:
+                s_raw_accum, d_accum = accumulator_hook(s_raw_accum, d_accum)
 
             # Finalize cached state for this layer
             s_out = block.compute_cached_state(s_raw_accum, d_accum)

@@ -18,7 +18,6 @@ introduces a two-phase decoupled inference:
 Reference: Transolver-3 paper, Section 3.3, Figure 3.
 """
 
-import math
 import torch
 import torch.distributed as dist
 
@@ -194,62 +193,15 @@ class DistributedCachedInference:
                 chunk_size=self.cache_chunk_size,
             )
 
-        return self._build_cache_distributed(x_local, fx_local, T)
-
-    @torch.no_grad()
-    def _build_cache_distributed(self, x_local, fx_local, T):
-        """Distributed cache build: local accumulation + all-reduce."""
-        B, N_local, _ = x_local.shape
-        device = x_local.device
-        chunk_size = self.cache_chunk_size
-        num_chunks = math.ceil(N_local / chunk_size)
-
-        # Step 1: Preprocess local chunks, store on CPU
-        chunks_fx_cpu = []
-        for k in range(num_chunks):
-            start = k * chunk_size
-            end = min(start + chunk_size, N_local)
-            x_k = x_local[:, start:end]
-            fx_k = fx_local[:, start:end] if fx_local is not None else None
-            chunk_fx = self.model._preprocess(x_k, fx_k, T)
-            chunks_fx_cpu.append(chunk_fx.cpu())
-            del chunk_fx
-
-        cache = []
-        for layer_idx, block in enumerate(self.model.blocks):
-            # Phase A: Accumulate s_raw and d from LOCAL chunks
-            s_raw_accum = None
-            d_accum = None
-
-            for k in range(num_chunks):
-                chunk_fx_gpu = chunks_fx_cpu[k].to(device)
-                s_raw_k, d_k = block.compute_physical_state(chunk_fx_gpu)
-                if s_raw_accum is None:
-                    s_raw_accum = s_raw_k
-                    d_accum = d_k
-                else:
-                    s_raw_accum = s_raw_accum + s_raw_k
-                    d_accum = d_accum + d_k
-                del chunk_fx_gpu
-
-            # All-reduce: sum accumulators across all ranks
-            # s_raw: (B, H, M, C) ≈ 512 KB, d: (B, H, M) ≈ 2 KB
+        def _allreduce_hook(s_raw_accum, d_accum):
+            """All-reduce accumulators across ranks (s_raw ≈ 512 KB, d ≈ 2 KB)."""
             dist.all_reduce(s_raw_accum, op=dist.ReduceOp.SUM)
             dist.all_reduce(d_accum, op=dist.ReduceOp.SUM)
+            return s_raw_accum, d_accum
 
-            # Finalize cached state (identical on all ranks)
-            s_out = block.compute_cached_state(s_raw_accum, d_accum)
-            cache.append(s_out)
-            del s_raw_accum, d_accum
-
-            # Phase B: Advance local chunks through this layer
-            for k in range(num_chunks):
-                chunk_fx_gpu = chunks_fx_cpu[k].to(device)
-                advanced = block(chunk_fx_gpu, num_tiles=self.num_tiles)
-                chunks_fx_cpu[k] = advanced.cpu()
-                del chunk_fx_gpu, advanced
-
-        return cache
+        return self.model._cache_chunked(
+            x_local, fx_local, T, self.num_tiles, self.cache_chunk_size, accumulator_hook=_allreduce_hook
+        )
 
     @torch.no_grad()
     def decode(self, x_query_local, cache, fx_query_local=None, T=None):
