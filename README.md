@@ -11,6 +11,14 @@ Scaling Transformer Solvers to Industrial-Scale Geometries (100M+ cells).
 
 Based on the [Transolver paper](https://arxiv.org/abs/2402.02366) (ICML 2024 Spotlight) and the [Transolver-3 paper](https://arxiv.org/pdf/2602.04940).
 
+## Context
+
+Traditional CFD (Computational Fluid Dynamics) simulations — such as virtual wind tunnel tests — solve the Navier-Stokes equations on fine meshes using HPC clusters. A single DrivAerML car aerodynamics run with 140M cells can take hours on hundreds of CPU cores. **Transolver** replaces the iterative PDE solver with a transformer that learns the physics directly from data: given mesh coordinates as input, it predicts pressure, velocity, and other fields in a single forward pass. Transolver-3 scales this approach to industrial-scale meshes (100M+ cells) through physics-aware attention in a compressed "slice domain" of only 64 slices, making inference 10-100× faster than classical solvers while maintaining engineering-grade accuracy.
+
+<p align="center">
+<img src="./experiments/results/drivaer_pressure_sideview.png" height="200" alt="DrivAerML pressure comparison" align=center />
+</p>
+
 ## Key Innovations
 
 1. **Faster Slice & Deslice** — Linear projections moved from O(N) mesh domain to O(M) slice domain via matrix multiplication associativity
@@ -19,10 +27,6 @@ Based on the [Transolver paper](https://arxiv.org/abs/2402.02366) (ICML 2024 Spo
 4. **Physical State Caching** — Two-phase inference: build cache from chunks, decode any point
 5. **Mixed Precision** — Full autocast + GradScaler support, halving memory footprint
 6. **Mesh-Sharded Distribution** — Shard meshes >100 GB across GPUs; all-reduce only the tiny slice accumulators (~514 KB/layer)
-
-<p align="center">
-<img src="./experiments/results/drivaer_pressure_sideview.png" height="200" alt="DrivAerML pressure comparison" align=center />
-</p>
 
 ## Setup on Databricks
 
