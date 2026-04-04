@@ -211,7 +211,9 @@ def evaluate(model, dataloader, args, device, sharded=False):
                  processes its mesh shard and all-reduces the tiny cache
                  accumulators. If False, rank 0 evaluates on full data.
     """
-    raw_model = model.module if hasattr(model, "module") else model
+    from transolver3.distributed import unwrap_ddp_model
+
+    raw_model = unwrap_ddp_model(model)
     raw_model.eval()
     all_errors = []
     x_key, t_key = get_field_key(args.field)
@@ -410,7 +412,7 @@ def main():
         best_error = ckpt.get("best_error", float("inf"))
         log(f"Resumed from epoch {ckpt['epoch']}, best_error={best_error:.4f}, continuing at epoch {start_epoch}")
 
-    log(f"Training: epochs {start_epoch+1}-{args.epochs}, lr={scaled_lr:.1e} (scaled {world_size}x)")
+    log(f"Training: epochs {start_epoch + 1}-{args.epochs}, lr={scaled_lr:.1e} (scaled {world_size}x)")
     log(f"Tiles: {args.num_tiles}, Cache chunks: {args.cache_chunk_size:,}")
 
     # --- MLflow tracking (rank 0 only) ---
@@ -482,10 +484,7 @@ def main():
 
             # Early stopping (patience = number of eval cycles without improvement)
             if args.patience > 0 and evals_without_improvement >= args.patience:
-                log(
-                    f"Early stopping at epoch {epoch + 1}: "
-                    f"no improvement for {args.patience} eval cycles"
-                )
+                log(f"Early stopping at epoch {epoch + 1}: no improvement for {args.patience} eval cycles")
                 break
         else:
             log(f"Epoch {epoch + 1}/{args.epochs} | train_loss={train_loss:.6f} | time={t1 - t0:.1f}s")
@@ -517,7 +516,9 @@ def main():
         mlflow.log_metric("best_test_l2", best_error)
         best_path = os.path.join(args.save_dir, "best_model.pt")
         if os.path.exists(best_path):
-            raw_model = model.module if hasattr(model, "module") else model
+            from transolver3.distributed import unwrap_ddp_model
+
+            raw_model = unwrap_ddp_model(model)
             raw_model.load_state_dict(torch.load(best_path, map_location=device))
             sample_x = torch.randn(1, 100, space_dim, device=device)
             log_model_with_signature(raw_model, sample_x)

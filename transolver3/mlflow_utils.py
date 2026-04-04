@@ -44,7 +44,9 @@ def log_training_run(model, config, normalizers=None):
     mlflow.log_params(config)
 
     # Log model info
-    raw_model = model.module if hasattr(model, "module") else model
+    from transolver3.distributed import unwrap_ddp_model
+
+    raw_model = unwrap_ddp_model(model)
     n_params = sum(p.numel() for p in raw_model.parameters())
     mlflow.log_param("model_parameters", n_params)
 
@@ -77,7 +79,9 @@ def log_model_with_signature(model, sample_input, registered_model_name=None):
     import mlflow.pytorch
     import numpy as np
 
-    raw_model = model.module if hasattr(model, "module") else model
+    from transolver3.distributed import unwrap_ddp_model
+
+    raw_model = unwrap_ddp_model(model)
     raw_model.eval()
     with torch.no_grad():
         sample_output = raw_model(sample_input.to(next(raw_model.parameters()).device))

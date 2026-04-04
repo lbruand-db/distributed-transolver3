@@ -186,7 +186,9 @@ def register_serving_model(
     with tempfile.TemporaryDirectory() as tmpdir:
         # Save model state dict
         model_state_path = os.path.join(tmpdir, "model_state.pt")
-        raw_model = model.module if hasattr(model, "module") else model
+        from transolver3.distributed import unwrap_ddp_model
+
+        raw_model = unwrap_ddp_model(model)
         torch.save(raw_model.state_dict(), model_state_path)
 
         # Save model config

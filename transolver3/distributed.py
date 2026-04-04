@@ -67,6 +67,11 @@ def get_device():
     return torch.device("cpu")
 
 
+def unwrap_ddp_model(model):
+    """Unwrap a DDP-wrapped model to get the underlying module."""
+    return model.module if hasattr(model, "module") else model
+
+
 def mesh_shard_range(total_points, rank, world_size):
     """Compute the [start, end) index range for this rank's mesh shard.
 
