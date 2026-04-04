@@ -23,6 +23,26 @@ import torch
 import torch.distributed as dist
 
 
+def _decode_chunked(model, x_query, cache, decode_chunk_size, fx_query=None, T=None):
+    """Decode predictions in chunks to limit GPU memory usage.
+
+    Shared implementation for CachedInference and DistributedCachedInference.
+    """
+    N_q = x_query.shape[1]
+    if decode_chunk_size is None or decode_chunk_size >= N_q:
+        return model.decode_from_cache(x_query, cache, fx_query=fx_query, T=T)
+
+    outputs = []
+    for start in range(0, N_q, decode_chunk_size):
+        end = min(start + decode_chunk_size, N_q)
+        x_q = x_query[:, start:end]
+        fx_q = fx_query[:, start:end] if fx_query is not None else None
+        out = model.decode_from_cache(x_q, cache, fx_query=fx_q, T=T)
+        outputs.append(out)
+
+    return torch.cat(outputs, dim=1)
+
+
 class CachedInference:
     """Manages two-phase inference for industrial-scale meshes.
 
@@ -102,19 +122,7 @@ class CachedInference:
         Returns:
             output: (B, N_q, out_dim) predictions
         """
-        N_q = x_query.shape[1]
-        if self.decode_chunk_size is None or self.decode_chunk_size >= N_q:
-            return self.model.decode_from_cache(x_query, cache, fx_query=fx_query, T=T)
-
-        outputs = []
-        for start in range(0, N_q, self.decode_chunk_size):
-            end = min(start + self.decode_chunk_size, N_q)
-            x_q = x_query[:, start:end]
-            fx_q = fx_query[:, start:end] if fx_query is not None else None
-            out = self.model.decode_from_cache(x_q, cache, fx_query=fx_q, T=T)
-            outputs.append(out)
-
-        return torch.cat(outputs, dim=1)
+        return _decode_chunked(self.model, x_query, cache, self.decode_chunk_size, fx_query=fx_query, T=T)
 
 
 class DistributedCachedInference:
@@ -258,19 +266,7 @@ class DistributedCachedInference:
         Returns:
             output: (B, N_q_local, out_dim) predictions for this rank's points
         """
-        N_q = x_query_local.shape[1]
-        if self.decode_chunk_size is None or self.decode_chunk_size >= N_q:
-            return self.model.decode_from_cache(x_query_local, cache, fx_query=fx_query_local, T=T)
-
-        outputs = []
-        for start in range(0, N_q, self.decode_chunk_size):
-            end = min(start + self.decode_chunk_size, N_q)
-            x_q = x_query_local[:, start:end]
-            fx_q = fx_query_local[:, start:end] if fx_query_local is not None else None
-            out = self.model.decode_from_cache(x_q, cache, fx_query=fx_q, T=T)
-            outputs.append(out)
-
-        return torch.cat(outputs, dim=1)
+        return _decode_chunked(self.model, x_query_local, cache, self.decode_chunk_size, fx_query=fx_query_local, T=T)
 
     @torch.no_grad()
     def predict(self, x_local, fx_local=None, T=None, gather=True):
