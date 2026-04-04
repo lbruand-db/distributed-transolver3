@@ -1,3 +1,17 @@
+# Copyright 2024 Databricks, Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Tests for transolver3.databricks_training — TorchDistributor and Spark integration."""
 
 import os
@@ -69,6 +83,7 @@ def _install_fake_module(name, attrs):
     by creating parent modules as needed.
     """
     import sys
+
     parts = name.split(".")
     for i in range(len(parts)):
         parent = ".".join(parts[: i + 1])
@@ -105,9 +120,8 @@ class TestPropagateAuth:
     def test_extracts_from_mlflow_creds(self):
         """Extracts host/token from MLflow's get_databricks_host_creds."""
         import sys
-        mock_creds = SimpleNamespace(
-            host="https://test.cloud.databricks.com", token="mlflow-token-123"
-        )
+
+        mock_creds = SimpleNamespace(host="https://test.cloud.databricks.com", token="mlflow-token-123")
         saved = {}
         for mod_name in list(sys.modules):
             if mod_name.startswith("mlflow"):
@@ -129,9 +143,8 @@ class TestPropagateAuth:
     def test_falls_back_to_databricks_sdk(self):
         """Falls back to Databricks SDK when MLflow creds fail."""
         import sys
-        mock_config = SimpleNamespace(
-            host="https://sdk.cloud.databricks.com", token="sdk-token-456"
-        )
+
+        mock_config = SimpleNamespace(host="https://sdk.cloud.databricks.com", token="sdk-token-456")
         mock_client = MagicMock()
         mock_client.config = mock_config
 
@@ -166,6 +179,7 @@ class TestPropagateAuth:
     def test_no_op_when_all_approaches_fail(self):
         """Does nothing if all credential sources fail."""
         import sys
+
         saved = {}
         for mod_name in list(sys.modules):
             if mod_name.startswith("mlflow") or mod_name.startswith("databricks"):
@@ -191,12 +205,9 @@ class TestPropagateAuth:
     def test_mlflow_creds_with_none_token_falls_through(self):
         """Falls through to SDK if MLflow creds return None token."""
         import sys
-        mock_creds_no_token = SimpleNamespace(
-            host="https://test.cloud.databricks.com", token=None
-        )
-        mock_config = SimpleNamespace(
-            host="https://sdk.cloud.databricks.com", token="sdk-token"
-        )
+
+        mock_creds_no_token = SimpleNamespace(host="https://test.cloud.databricks.com", token=None)
+        mock_config = SimpleNamespace(host="https://sdk.cloud.databricks.com", token="sdk-token")
         mock_client = MagicMock()
         mock_client.config = mock_config
 
@@ -225,10 +236,9 @@ class TestPropagateAuth:
     def test_only_host_set_still_tries_extraction(self):
         """Tries extraction if only one of HOST/TOKEN is set."""
         import sys
+
         os.environ["DATABRICKS_HOST"] = "https://partial.com"
-        mock_creds = SimpleNamespace(
-            host="https://new.cloud.databricks.com", token="new-token"
-        )
+        mock_creds = SimpleNamespace(host="https://new.cloud.databricks.com", token="new-token")
 
         saved = {}
         for mod_name in list(sys.modules):
