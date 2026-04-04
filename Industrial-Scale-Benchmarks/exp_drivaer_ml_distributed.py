@@ -245,10 +245,8 @@ def evaluate(model, dataloader, args, device, sharded=False):
             cache = engine.build_cache(x)
             pred = engine.decode(x, cache)
 
-        diff_norm = torch.norm(pred - target, p=2, dim=(1, 2))
-        target_norm = torch.norm(target, p=2, dim=(1, 2))
-        error = diff_norm / (target_norm + 1e-8)
-        all_errors.append(error.cpu())
+        error = relative_l2_loss(pred, target)
+        all_errors.append(error.cpu().view(1))
 
     if all_errors:
         mean_error = torch.cat(all_errors).mean().item()
