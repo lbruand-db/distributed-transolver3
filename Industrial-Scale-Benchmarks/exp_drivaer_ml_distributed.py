@@ -476,27 +476,36 @@ def main():
             if dist.is_initialized():
                 dist.barrier()
 
-            # Early stopping (patience = number of eval cycles without improvement)
-            if args.patience > 0 and evals_without_improvement >= args.patience:
+            # Broadcast early stopping decision from rank 0 so all ranks break together
+            if args.patience > 0 and dist.is_initialized():
+                should_stop = torch.tensor([1 if evals_without_improvement >= args.patience else 0], device=device)
+                dist.broadcast(should_stop, src=0)
+                if should_stop.item():
+                    log(f"Early stopping at epoch {epoch + 1}: no improvement for {args.patience} eval cycles")
+                    break
+            elif args.patience > 0 and evals_without_improvement >= args.patience:
                 log(f"Early stopping at epoch {epoch + 1}: no improvement for {args.patience} eval cycles")
                 break
         else:
             log(f"Epoch {epoch + 1}/{args.epochs} | train_loss={train_loss:.6f} | time={t1 - t0:.1f}s")
 
         # Save full training checkpoint periodically (for resumption)
-        if is_main_process() and (epoch + 1) % args.save_every == 0:
-            ckpt_path = os.path.join(args.save_dir, "training_checkpoint.pt")
-            torch.save(
-                {
-                    "epoch": epoch,
-                    "model": model.module.state_dict(),
-                    "optimizer": optimizer.state_dict(),
-                    "scheduler": scheduler.state_dict(),
-                    "best_error": best_error,
-                },
-                ckpt_path,
-            )
-            log(f"Saved training checkpoint at epoch {epoch + 1} to {ckpt_path}")
+        if (epoch + 1) % args.save_every == 0:
+            if is_main_process():
+                ckpt_path = os.path.join(args.save_dir, "training_checkpoint.pt")
+                torch.save(
+                    {
+                        "epoch": epoch,
+                        "model": model.module.state_dict(),
+                        "optimizer": optimizer.state_dict(),
+                        "scheduler": scheduler.state_dict(),
+                        "best_error": best_error,
+                    },
+                    ckpt_path,
+                )
+                log(f"Saved training checkpoint at epoch {epoch + 1} to {ckpt_path}")
+            if dist.is_initialized():
+                dist.barrier()
 
         # Log metrics to MLflow (live, per-epoch)
         if mlflow_run and is_main_process():
