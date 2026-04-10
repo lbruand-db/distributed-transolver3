@@ -1,0 +1,30 @@
+resources:
+  jobs:
+    download_convert:
+      name: "[${bundle.target}] Download & Convert DrivAerML VTP to NPZ"
+
+      tasks:
+        - task_key: "convert"
+          spark_python_task:
+            python_file: ../scripts/download_convert_vtp.py
+            parameters:
+              - "--output_dir"
+              - "${var.data_volume_path}"
+          libraries:
+            - pypi:
+                package: "pyvista>=0.43"
+            - pypi:
+                package: "huggingface_hub>=0.20"
+            - pypi:
+                package: "vtk>=9.3"
+            - pypi:
+                package: "meshio>=5.3"
+          new_cluster:
+            spark_version: "15.4.x-scala2.12"
+            node_type_id: "i3.2xlarge"
+            num_workers: 0
+            spark_conf:
+              "spark.master": "local[*]"
+              "spark.databricks.cluster.profile": "singleNode"
+            custom_tags:
+              "ResourceClass": "SingleNode"

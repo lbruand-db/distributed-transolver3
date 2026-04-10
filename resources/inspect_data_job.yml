@@ -1,0 +1,19 @@
+resources:
+  jobs:
+    inspect_data:
+      name: "[${bundle.target}] Inspect Mesh Data"
+
+      tasks:
+        - task_key: "inspect"
+          spark_python_task:
+            python_file: ../scripts/inspect_data.py
+            parameters:
+              - "${var.data_volume_path}"
+          environment_key: "default"
+
+      environments:
+        - environment_key: "default"
+          spec:
+            client: "1"
+            dependencies:
+              - "numpy>=1.24"

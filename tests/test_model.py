@@ -26,7 +26,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from transolver3.transolver3_block import Transolver3Block, _pointwise_chunked
 from transolver3.model import Transolver3
 from transolver3.inference import CachedInference
-from transolver3.amortized_training import relative_l2_loss
+from transolver3.amortized_training import (
+    relative_l2_loss,
+    create_optimizer,
+    create_scheduler,
+    train_step,
+)
 
 
 def test_block_forward():
@@ -437,3 +442,78 @@ def test_tile_size_model():
     # ctor tile_size=50 -> 4 tiles, should match num_tiles=4
     diff = (out_ctor - out_ref).abs().max().item()
     assert diff < 1e-5, f"Constructor tile_size vs num_tiles diff: {diff}"
+
+
+def test_overfit_then_cached_inference():
+    """Train on a small synthetic problem, then verify cached inference matches.
+
+    This is the end-to-end functional test: train the model until it overfits
+    a simple target function (pressure = f(coords)), then check that:
+      1. Training loss (relative L2) drops well below the initial value
+      2. Cached inference produces predictions close to direct forward pass
+      3. Final relative L2 error on the training data is low
+
+    Runs on CPU in ~5 seconds.
+    """
+    torch.manual_seed(42)
+
+    B, N = 1, 200
+    space_dim = 3
+    out_dim = 1
+
+    # Synthetic target: a smooth function of coordinates that the model can learn
+    x = torch.randn(B, N, space_dim)
+    target = (torch.sin(x[:, :, 0:1]) + torch.cos(x[:, :, 1:2]) + 0.5 * x[:, :, 2:3])
+
+    model = Transolver3(
+        space_dim=space_dim,
+        n_layers=3,
+        n_hidden=64,
+        n_head=4,
+        fun_dim=0,
+        out_dim=out_dim,
+        slice_num=8,
+        mlp_ratio=1,
+    )
+
+    n_steps = 150
+    optimizer = create_optimizer(model, lr=3e-3)
+    scheduler = create_scheduler(optimizer, total_steps=n_steps)
+
+    # --- Phase 1: Train until the model overfits ---
+    first_loss = None
+    last_loss = None
+    for step in range(n_steps):
+        loss = train_step(model, x, None, target, optimizer, scheduler)
+        if step == 0:
+            first_loss = loss
+        last_loss = loss
+
+    # Loss should have dropped significantly
+    assert last_loss < first_loss * 0.3, (
+        f"Model did not learn: first_loss={first_loss:.4f}, last_loss={last_loss:.4f}"
+    )
+
+    # --- Phase 2: Verify direct forward pass has low relative L2 ---
+    model.eval()
+    with torch.no_grad():
+        pred_direct = model(x)
+    rel_l2_direct = relative_l2_loss(pred_direct, target).item()
+    assert rel_l2_direct < 0.15, (
+        f"Direct inference relative L2 too high: {rel_l2_direct:.4f}"
+    )
+
+    # --- Phase 3: Cached inference matches direct ---
+    with torch.no_grad():
+        engine = CachedInference(model, cache_chunk_size=50, decode_chunk_size=50)
+        pred_cached = engine.predict(x)
+
+    assert pred_cached.shape == pred_direct.shape
+    cache_diff = (pred_direct - pred_cached).abs().max().item()
+    assert cache_diff < 1e-3, f"Cached vs direct max diff: {cache_diff}"
+
+    # Cached inference should also have low relative L2
+    rel_l2_cached = relative_l2_loss(pred_cached, target).item()
+    assert rel_l2_cached < 0.15, (
+        f"Cached inference relative L2 too high: {rel_l2_cached:.4f}"
+    )
