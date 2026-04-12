@@ -14,10 +14,8 @@ Usage (Databricks job or local):
 
 import argparse
 import csv
-import io
 import os
 import shutil
-import sys
 import tempfile
 
 import numpy as np
@@ -143,7 +141,7 @@ def download_and_convert_one(run_id, output_dir, tmp_dir, geo_params_all):
             print("    WARNING: no params found, using zeros", flush=True)
 
     # --- Read mesh ---
-    print(f"    Loading mesh ...", flush=True)
+    print("    Loading mesh ...", flush=True)
     mesh = pv.read(vtp_path)
     print(f"    {mesh.n_cells:,} cells, {mesh.n_points:,} points", flush=True)
 
