@@ -32,7 +32,7 @@ from transolver3.amortized_training import (
     create_scheduler,
     train_step,
 )
-from transolver3.physics_attention_v3 import PhysicsAttentionV3, _slice_aggregate, _deslice
+from transolver3.physics_attention_v3 import PhysicsAttentionV3
 
 
 def test_block_forward():
