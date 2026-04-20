@@ -436,10 +436,13 @@ def main():
     # stats on its own shard; for correctness with sharded meshes we all-reduce
     # the running sums so every rank has identical mean/std.
     target_normalizer = TargetNormalizer(out_dim=out_dim).to(device)
-    log("Fitting target normalizer on training set...")
+    n_train = len(train_dataset)
+    log(f"Fitting target normalizer on {n_train} training samples...")
 
     def _target_iter():
-        for i in range(len(train_dataset)):
+        for i in range(n_train):
+            if (i + 1) % 50 == 0 or (i + 1) == n_train:
+                log(f"  Normalizer fitting: [{i + 1}/{n_train}]")
             sample = train_dataset[i]
             yield sample[t_key]
 
@@ -644,6 +647,8 @@ def main():
             mlflow_run = None
 
     # --- Training loop ---
+    log(f"Starting training loop: {args.epochs - start_epoch} epochs, "
+        f"{len(train_loader)} batches/epoch, eval every 10 epochs")
     if start_epoch == 0:
         best_error = float("inf")
     evals_without_improvement = 0
@@ -707,7 +712,18 @@ def main():
                 log(f"Early stopping at epoch {epoch + 1}: no improvement for {args.patience} eval cycles")
                 break
         else:
-            log(f"Epoch {epoch + 1}/{args.epochs} | train_loss={train_loss:.6f} | time={t1 - t0:.1f}s")
+            current_lr = optimizer.param_groups[0]["lr"]
+            avg_time = (t1 - t0)  # this epoch's time
+            remaining = (args.epochs - epoch - 1) * avg_time
+            eta_h, eta_m = divmod(int(remaining), 3600)
+            eta_m = eta_m // 60
+            log(
+                f"Epoch {epoch + 1}/{args.epochs} | "
+                f"train_loss={train_loss:.6f} | "
+                f"lr={current_lr:.2e} | "
+                f"time={t1 - t0:.1f}s | "
+                f"ETA ~{eta_h}h{eta_m:02d}m"
+            )
 
         # Save full training checkpoint periodically (for resumption)
         if (epoch + 1) % args.save_every == 0:
