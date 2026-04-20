@@ -480,6 +480,17 @@ def main():
         loaded_model = mlflow.pytorch.load_model(f"runs:/{run_id}/transolver3", map_location=device)
         model.module.load_state_dict(loaded_model.state_dict())
         log(f"Loaded model from MLflow run {run_id}")
+
+        # Load target normalizer from MLflow artifacts (overrides the one fitted above)
+        try:
+            from transolver3.mlflow_utils import load_normalization_artifacts
+            _, mlflow_target_norm = load_normalization_artifacts(run_id)
+            if mlflow_target_norm is not None:
+                target_normalizer.load_state_dict(mlflow_target_norm.state_dict())
+                target_normalizer = target_normalizer.to(device)
+                log("Loaded target normalizer from MLflow artifacts")
+        except Exception as e:
+            log(f"Could not load normalizer from MLflow ({e}), using refitted one")
     elif args.checkpoint:
         # Fallback: load from checkpoint file
         state_dict = torch.load(args.checkpoint, map_location=device)
@@ -579,6 +590,7 @@ def main():
                     "amp": args.amp,
                     "no_scale_lr": args.no_scale_lr,
                 },
+                normalizers={"target": target_normalizer},
             )
         except Exception as e:
             log(f"MLflow tracking unavailable ({e}), continuing without it")
