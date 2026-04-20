@@ -1,0 +1,41 @@
+resources:
+  jobs:
+    convert_vtp_to_npz:
+      name: "[${bundle.target}] Convert DrivAerML VTP to NPZ"
+
+      tasks:
+        - task_key: "discover"
+          description: "List raw VTP runs that need conversion"
+          spark_python_task:
+            python_file: ../scripts/list_unconverted_runs.py
+            parameters:
+              - "--data_dir"
+              - "${var.data_volume_path}"
+          environment_key: "default"
+
+        - task_key: "convert"
+          depends_on:
+            - task_key: "discover"
+          description: "Convert each VTP to NPZ in parallel"
+          for_each_task:
+            inputs: "{{tasks.discover.values.run_ids}}"
+            concurrency: 10
+            task:
+              task_key: "convert_run"
+              spark_python_task:
+                python_file: ../scripts/convert_vtp_to_npz_batch.py
+                parameters:
+                  - "--data_dir"
+                  - "${var.data_volume_path}"
+                  - "--run"
+                  - "{{input}}"
+              environment_key: "default"
+
+      environments:
+        - environment_key: "default"
+          spec:
+            client: "1"
+            dependencies:
+              - "pyvista>=0.43"
+              - "vtk>=9.3"
+              - "numpy"
