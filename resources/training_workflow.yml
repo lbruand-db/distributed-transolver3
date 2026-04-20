@@ -70,6 +70,7 @@ resources:
               - "5"
               - "--shard-eval"
               - "--amp"
+              - "--no-scale-lr"
               - "--save_dir"
               - "${var.data_volume_path}/checkpoints"
           new_cluster:
