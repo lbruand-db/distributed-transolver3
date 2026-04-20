@@ -14,7 +14,7 @@ resources:
 
       tasks:
         - task_key: "generate_split"
-          description: "Generate deterministic 400/50/50 train/test/val split (paper Appendix A.2)"
+          description: "Generate deterministic 400/50/34 train/test/val split (paper Appendix A.2)"
           spark_python_task:
             python_file: ../scripts/generate_split.py
             parameters:
@@ -22,6 +22,12 @@ resources:
               - "${var.data_volume_path}"
               - "--seed"
               - "42"
+              - "--n_train"
+              - "400"
+              - "--n_test"
+              - "50"
+              - "--n_val"
+              - "34"
           environment_key: "lightweight"
 
         - task_key: "preprocess"
