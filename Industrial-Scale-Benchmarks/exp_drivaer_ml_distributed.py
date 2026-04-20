@@ -62,6 +62,7 @@ from dataset.drivaer_ml import DrivAerMLDataset
 # Optional MLflow integration (guarded import)
 try:
     import mlflow
+    import mlflow.data
     import mlflow.pytorch
     from transolver3.mlflow_utils import log_training_run, log_model_with_signature
 
@@ -604,6 +605,40 @@ def main():
                 except Exception:
                     pass
             mlflow.log_param("python_version", sys.version.split()[0])
+
+            # Log dataset lineage via mlflow.data (MLOPS-2)
+            import hashlib
+
+            # Hash split files for exact data reproducibility
+            for split_name in ["train", "test"]:
+                split_path = os.path.join(args.data_dir, f"{split_name}.txt")
+                if os.path.exists(split_path):
+                    with open(split_path, "rb") as f:
+                        digest = hashlib.sha256(f.read()).hexdigest()[:16]
+                    mlflow.log_param(f"split_{split_name}_hash", digest)
+
+            # Log training dataset with schema and source via mlflow.data
+            train_sample = train_dataset[0]
+            train_ds = mlflow.data.from_numpy(
+                features=train_sample[x_key].numpy(),
+                targets=train_sample[t_key].numpy(),
+                source=args.data_dir,
+                name=f"drivaer-{args.field}-train",
+            )
+            mlflow.log_input(train_ds, context="training")
+            mlflow.log_param("train_samples", len(train_dataset))
+
+            # Log test dataset
+            test_sample = test_dataset[0]
+            test_ds = mlflow.data.from_numpy(
+                features=test_sample[x_key].numpy(),
+                targets=test_sample[t_key].numpy(),
+                source=args.data_dir,
+                name=f"drivaer-{args.field}-test",
+            )
+            mlflow.log_input(test_ds, context="evaluation")
+            mlflow.log_param("test_samples", len(test_dataset))
+            mlflow.log_param("data_dir", args.data_dir)
         except Exception as e:
             log(f"MLflow tracking unavailable ({e}), continuing without it")
             mlflow_run = None

@@ -37,20 +37,22 @@ assert best_test_l2 < 0.10, f"Model too inaccurate: {best_test_l2:.4f}"
 
 ---
 
-### MLOPS-2: No Data Versioning
+### MLOPS-2: No Data Versioning — RESOLVED
 
-**Problem**: MLflow logs model hyperparameters but not which data produced
-the model. If someone adds/removes NPZ files, regenerates splits, or
-reprocesses VTP files, there is no way to trace which data version produced
-which model. Reproducibility breaks silently.
+**Status**: Fixed using MLflow's `mlflow.data` lineage API.
 
-**Fix**: Log data provenance as MLflow params at training time:
-- Hash of `train.txt` and `test.txt` (SHA-256)
-- Number of training / test samples
-- Total mesh points in training set
-- Data directory path
-
-**Effort**: Low — add a few `mlflow.log_param()` calls.
+**Implementation**:
+- Uses `mlflow.data.from_numpy()` to create `NumpyDataset` objects from
+  training and test samples, recording schema (feature/target shapes and
+  dtypes), content digest (auto-computed hash), and source (data directory)
+- Calls `mlflow.log_input(dataset, context="training"|"evaluation")` to
+  attach dataset lineage to the MLflow run
+- SHA-256 hashes of `train.txt` and `test.txt` split files logged as params
+  (`split_train_hash`, `split_test_hash`) for exact split reproducibility
+- Sample counts (`train_samples`, `test_samples`) and `data_dir` logged as
+  params
+- Lineage is visible in the MLflow UI's Datasets tab and integrates with
+  Unity Catalog lineage on Databricks
 
 ---
 
@@ -198,7 +200,7 @@ improvement/regression report, and logs `delta_vs_previous` and
 | Gap | Severity | Effort | Status |
 |-----|----------|--------|--------|
 | MLOPS-1: Quality gate | Critical | Low | Open |
-| MLOPS-2: Data versioning | Critical | Low | Open |
+| MLOPS-2: Data versioning | Critical | Low | **RESOLVED** |
 | MLOPS-3: Model smoke test | Critical | Low | Open |
 | MLOPS-4: Model card | Important | Medium | **RESOLVED** |
 | MLOPS-5: Pin dependencies | Important | Low | **RESOLVED** |
