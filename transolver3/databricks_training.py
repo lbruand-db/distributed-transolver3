@@ -209,6 +209,12 @@ def preprocess_with_spark(spark, data_dir, catalog, schema, table):
     file_schema = StructType([StructField("file_path", StringType(), False)])
     files_df = spark.createDataFrame([(f,) for f in files], schema=file_schema)
 
+    # Large arrays (coords, normals) have millions of rows — computing
+    # stats over FUSE is extremely slow.  Only compute stats for small
+    # arrays (params, targets with < 1M elements).  Shapes are always
+    # recorded via the cheap mmap header read.
+    _STATS_MAX_ELEMENTS = 1_000_000
+
     def compute_stats(file_path):
         """UDF-like function to compute stats for a single .npz file."""
         data = np.load(file_path, mmap_mode="r")
@@ -217,13 +223,19 @@ def preprocess_with_spark(spark, data_dir, catalog, schema, table):
         stats = {"sample_id": sample_id, "file_path": file_path}
 
         for key in data.keys():
-            arr = np.array(data[key])  # materialize from mmap
+            arr = data[key]  # still mmap'd — shape is free
             stats[f"{key}_shape"] = json.dumps(list(arr.shape))
-            if arr.ndim >= 1 and arr.dtype in (np.float32, np.float64):
-                stats[f"{key}_min"] = float(arr.min())
-                stats[f"{key}_max"] = float(arr.max())
-                stats[f"{key}_mean"] = float(arr.mean())
-                stats[f"{key}_std"] = float(arr.std())
+
+            n_elements = 1
+            for d in arr.shape:
+                n_elements *= d
+
+            if arr.ndim >= 1 and arr.dtype in (np.float32, np.float64) and n_elements <= _STATS_MAX_ELEMENTS:
+                materialized = np.array(arr)
+                stats[f"{key}_min"] = float(materialized.min())
+                stats[f"{key}_max"] = float(materialized.max())
+                stats[f"{key}_mean"] = float(materialized.mean())
+                stats[f"{key}_std"] = float(materialized.std())
 
         return Row(**{k: str(v) for k, v in stats.items()})
 
