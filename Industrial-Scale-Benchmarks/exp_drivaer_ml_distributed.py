@@ -595,6 +595,15 @@ def main():
                 },
                 normalizers={"target": target_normalizer},
             )
+            # Log installed package versions for reproducibility (MLOPS-5)
+            import importlib.metadata
+            for pkg in ["torch", "einops", "timm", "numpy", "mlflow"]:
+                try:
+                    ver = importlib.metadata.version(pkg)
+                    mlflow.log_param(f"pkg_{pkg}", ver)
+                except Exception:
+                    pass
+            mlflow.log_param("python_version", sys.version.split()[0])
         except Exception as e:
             log(f"MLflow tracking unavailable ({e}), continuing without it")
             mlflow_run = None

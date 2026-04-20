@@ -49,9 +49,9 @@ resources:
               ResourceClass: "SingleNode"
           libraries:
             - pypi:
-                package: "einops>=0.7"
+                package: "einops==0.8.2"
             - pypi:
-                package: "timm>=1.0"
+                package: "timm==1.0.25"
 
         - task_key: "train"
           depends_on:
@@ -94,11 +94,11 @@ resources:
               ResourceClass: "SingleNode"
           libraries:
             - pypi:
-                package: "einops>=0.7"
+                package: "einops==0.8.2"
             - pypi:
-                package: "timm>=1.0"
+                package: "timm==1.0.25"
             - pypi:
-                package: "mlflow>=2.10"
+                package: "mlflow==2.22.0"
 
         - task_key: "evaluate"
           depends_on:
@@ -128,11 +128,11 @@ resources:
               ResourceClass: "SingleNode"
           libraries:
             - pypi:
-                package: "einops>=0.7"
+                package: "einops==0.8.2"
             - pypi:
-                package: "timm>=1.0"
+                package: "timm==1.0.25"
             - pypi:
-                package: "mlflow>=2.10"
+                package: "mlflow==2.22.0"
 
         - task_key: "register"
           depends_on:
@@ -161,7 +161,7 @@ resources:
               ResourceClass: "SingleNode"
           libraries:
             - pypi:
-                package: "mlflow>=2.10"
+                package: "mlflow==2.22.0"
 
         - task_key: "deploy"
           depends_on:
@@ -190,8 +190,8 @@ resources:
               ResourceClass: "SingleNode"
           libraries:
             - pypi:
-                package: "einops>=0.7"
+                package: "einops==0.8.2"
             - pypi:
-                package: "timm>=1.0"
+                package: "timm==1.0.25"
             - pypi:
                 package: "databricks-sdk>=0.20"
