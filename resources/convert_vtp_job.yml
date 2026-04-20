@@ -11,7 +11,7 @@ resources:
             parameters:
               - "--data_dir"
               - "${var.data_volume_path}"
-          environment_key: "default"
+          environment_key: "discover_env"
 
         - task_key: "convert"
           depends_on:
@@ -29,10 +29,14 @@ resources:
                   - "${var.data_volume_path}"
                   - "--run"
                   - "{{input}}"
-              environment_key: "default"
+              environment_key: "convert_env"
 
       environments:
-        - environment_key: "default"
+        - environment_key: "discover_env"
+          spec:
+            client: "1"
+            dependencies: []
+        - environment_key: "convert_env"
           spec:
             client: "1"
             dependencies:
