@@ -47,19 +47,20 @@ def main():
     to_convert = sorted(available - existing)
     print(f"{len(to_convert)} runs to convert", flush=True)
 
-    # Output as task value for for_each_task
-    run_ids_json = json.dumps(to_convert)
+    # Output as task value for for_each_task.
+    # Pass the Python list directly — taskValues.set handles JSON serialization.
+    # Passing json.dumps(list) would double-encode it as a JSON string.
     try:
         from pyspark.dbutils import DBUtils
         from pyspark.sql import SparkSession
 
         spark = SparkSession.builder.getOrCreate()
         dbutils = DBUtils(spark)
-        dbutils.jobs.taskValues.set(key="run_ids", value=run_ids_json)
-        print(f"Set task value 'run_ids': {run_ids_json}", flush=True)
+        dbutils.jobs.taskValues.set(key="run_ids", value=to_convert)
+        print(f"Set task value 'run_ids': {len(to_convert)} run IDs", flush=True)
     except Exception:
         # Running locally — just print
-        print(f"run_ids={run_ids_json}", flush=True)
+        print(f"run_ids={json.dumps(to_convert)}", flush=True)
 
 
 if __name__ == "__main__":
