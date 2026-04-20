@@ -90,6 +90,12 @@ def parse_args():
     parser.add_argument("--slice_num", type=int, default=64)
     parser.add_argument("--num_tiles", type=int, default=8)
     parser.add_argument("--dropout", type=float, default=0.0)
+    parser.add_argument(
+        "--amp",
+        action="store_true",
+        help="Enable mixed precision training (float16 on CUDA, bfloat16 on CPU). "
+        "Paper Appendix A.4: 'Training was conducted in either float16 or bfloat16 precision.'",
+    )
     parser.add_argument("--grad_clip", type=float, default=1.0)
     parser.add_argument(
         "--accumulation_steps",
@@ -160,12 +166,13 @@ def get_field_key(field):
     return f"{field}_x", f"{field}_target"
 
 
-def train_epoch(model, dataloader, optimizer, scheduler, sampler, args, device):
+def train_epoch(model, dataloader, optimizer, scheduler, sampler, args, device, scaler=None):
     model.train()
     total_loss = 0.0
     count = 0
     accum = args.accumulation_steps
     x_key, t_key = get_field_key(args.field)
+    amp_dtype = torch.bfloat16 if device.type == "cpu" else torch.float16
 
     optimizer.zero_grad()
     for step, batch in enumerate(dataloader):
@@ -178,17 +185,28 @@ def train_epoch(model, dataloader, optimizer, scheduler, sampler, args, device):
         target_sub = target[:, indices]
 
         # Scale loss by accumulation steps so gradients average correctly
-        pred = model(x_sub, num_tiles=args.num_tiles)
-        loss = relative_l2_loss(pred, target_sub) / accum
-        loss.backward()
+        with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=scaler is not None):
+            pred = model(x_sub, num_tiles=args.num_tiles)
+            loss = relative_l2_loss(pred, target_sub) / accum
+
+        if scaler is not None:
+            scaler.scale(loss).backward()
+        else:
+            loss.backward()
         # DDP handles gradient all-reduce automatically on backward()
 
         total_loss += loss.item() * accum  # unscale for logging
         count += 1
 
         if (step + 1) % accum == 0 or (step + 1) == len(dataloader):
-            torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
-            optimizer.step()
+            if scaler is not None:
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
+                optimizer.step()
             scheduler.step()
             optimizer.zero_grad()
 
@@ -392,6 +410,11 @@ def main():
     total_steps = args.epochs * len(train_loader)
     scheduler = create_scheduler(optimizer, total_steps)
 
+    # Mixed precision (paper Appendix A.4)
+    scaler = torch.amp.GradScaler() if args.amp else None
+    if args.amp:
+        log("Mixed precision training enabled (AMP)")
+
     # Each rank gets a unique seed for different random subsets
     mesh_sampler = AmortizedMeshSampler(local_subset_size, seed=args.seed + rank)
 
@@ -403,6 +426,8 @@ def main():
         model.module.load_state_dict(ckpt["model"])
         optimizer.load_state_dict(ckpt["optimizer"])
         scheduler.load_state_dict(ckpt["scheduler"])
+        if scaler is not None and "scaler" in ckpt:
+            scaler.load_state_dict(ckpt["scaler"])
         start_epoch = ckpt["epoch"] + 1
         best_error = ckpt.get("best_error", float("inf"))
         log(f"Resumed from epoch {ckpt['epoch']}, best_error={best_error:.4f}, continuing at epoch {start_epoch}")
@@ -445,6 +470,7 @@ def main():
                     "space_dim": space_dim,
                     "out_dim": out_dim,
                     "dropout": args.dropout,
+                    "amp": args.amp,
                 },
             )
         except Exception as e:
@@ -458,7 +484,7 @@ def main():
     for epoch in range(start_epoch, args.epochs):
         train_sampler.set_epoch(epoch)  # shuffle differently each epoch
         t0 = time.time()
-        train_loss = train_epoch(model, train_loader, optimizer, scheduler, mesh_sampler, args, device)
+        train_loss = train_epoch(model, train_loader, optimizer, scheduler, mesh_sampler, args, device, scaler=scaler)
         t1 = time.time()
 
         # Evaluate
@@ -505,16 +531,16 @@ def main():
         if (epoch + 1) % args.save_every == 0:
             if is_main_process():
                 ckpt_path = os.path.join(args.save_dir, "training_checkpoint.pt")
-                torch.save(
-                    {
-                        "epoch": epoch,
-                        "model": model.module.state_dict(),
-                        "optimizer": optimizer.state_dict(),
-                        "scheduler": scheduler.state_dict(),
-                        "best_error": best_error,
-                    },
-                    ckpt_path,
-                )
+                ckpt_data = {
+                    "epoch": epoch,
+                    "model": model.module.state_dict(),
+                    "optimizer": optimizer.state_dict(),
+                    "scheduler": scheduler.state_dict(),
+                    "best_error": best_error,
+                }
+                if scaler is not None:
+                    ckpt_data["scaler"] = scaler.state_dict()
+                torch.save(ckpt_data, ckpt_path)
                 log(f"Saved training checkpoint at epoch {epoch + 1} to {ckpt_path}")
             if dist.is_initialized():
                 dist.barrier()
