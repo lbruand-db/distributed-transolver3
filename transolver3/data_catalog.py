@@ -37,8 +37,11 @@ def _require_pyspark():
         raise ImportError("pyspark is required for data_catalog. Install with: pip install transolver3[databricks]")
 
 
-def register_mesh_metadata(spark, catalog, schema, table, samples_dir, workers=8):
+def register_mesh_metadata(spark, catalog, schema, table, samples_dir):
     """Scan .npz files and register mesh metadata in a Delta table.
+
+    Uses Spark to parallelize I/O-bound NPZ header reads across all
+    available cores.
 
     Args:
         spark: SparkSession
@@ -47,24 +50,26 @@ def register_mesh_metadata(spark, catalog, schema, table, samples_dir, workers=8
         table: Table name (e.g., "mesh_metadata")
         samples_dir: Path to directory containing .npz sample files
             (local path or UC Volume path like /Volumes/catalog/schema/volume/)
-        workers: Number of concurrent threads for I/O (default 8)
 
     Returns:
         PySpark DataFrame of the registered metadata
     """
     _require_pyspark()
-    import threading
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-
-    import numpy as np
     from pyspark.sql import Row
+    from pyspark.sql.types import StructType, StructField, StringType
 
     npz_files = sorted(f for f in os.listdir(samples_dir) if f.endswith(".npz"))
     total = len(npz_files)
-    print(f"Scanning {total} .npz files ({workers} threads)...", flush=True)
+    print(f"Scanning {total} .npz files (Spark distributed)...", flush=True)
 
-    def _scan_one(fname):
-        fpath = os.path.join(samples_dir, fname)
+    # Broadcast samples_dir so workers can resolve full paths
+    b_samples_dir = spark.sparkContext.broadcast(samples_dir)
+
+    def _scan_one(row):
+        import numpy as np
+
+        fname = row.file_name
+        fpath = os.path.join(b_samples_dir.value, fname)
         sample_id = os.path.splitext(fname)[0]
         data = np.load(fpath, mmap_mode="r")
         keys = list(data.keys())
@@ -85,22 +90,9 @@ def register_mesh_metadata(spark, catalog, schema, table, samples_dir, workers=8
             registered_at=datetime.now(timezone.utc).isoformat(),
         )
 
-    lock = threading.Lock()
-    completed = [0]
-    rows = []
-
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {pool.submit(_scan_one, f): f for f in npz_files}
-        for future in as_completed(futures):
-            row = future.result()
-            rows.append(row)
-            with lock:
-                completed[0] += 1
-                n = completed[0]
-            if n % 50 == 0 or n == total:
-                print(f"  [{n}/{total}] scanned", flush=True)
-
-    df = spark.createDataFrame(rows)
+    file_schema = StructType([StructField("file_name", StringType(), False)])
+    files_df = spark.createDataFrame([(f,) for f in npz_files], schema=file_schema)
+    df = spark.createDataFrame(files_df.rdd.map(_scan_one))
     full_table = f"{catalog}.{schema}.{table}"
     df.write.format("delta").mode("overwrite").saveAsTable(full_table)
     return spark.table(full_table)
