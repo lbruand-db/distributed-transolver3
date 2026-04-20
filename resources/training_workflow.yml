@@ -146,7 +146,7 @@ resources:
               - "--schema"
               - "${var.schema}"
               - "--model_name"
-              - "${var.model_name}"
+              - "${var.model_name}-${var.field}"
               - "--mlflow_run_id_file"
               - "${var.data_volume_path}/checkpoints/mlflow_run_id.txt"
           new_cluster:
@@ -175,9 +175,9 @@ resources:
               - "--schema"
               - "${var.schema}"
               - "--model_name"
-              - "${var.model_name}"
+              - "${var.model_name}-${var.field}"
               - "--endpoint_name"
-              - "${var.endpoint_name}"
+              - "${var.endpoint_name}-${var.field}"
           new_cluster:
             spark_version: "15.4.x-gpu-ml-scala2.12"
             node_type_id: "i3.xlarge"
