@@ -225,6 +225,15 @@ def train_epoch(model, dataloader, optimizer, scheduler, sampler, args, device, 
     return total_loss / max(count, 1)
 
 
+# Per-quantity channel splits for Table 4 reproduction.
+# surface_target = cat([pressure(1), wall_shear(3)], dim=-1) -> 4 channels
+# volume_target  = cat([velocity(3), pressure(1)], dim=-1)   -> 4 channels
+_QUANTITY_SPLITS = {
+    "surface": [("p_s", 0, 1), ("tau", 1, 4)],
+    "volume": [("u", 0, 3), ("p_v", 3, 4)],
+}
+
+
 @torch.no_grad()
 def evaluate(model, dataloader, args, device, sharded=False, target_normalizer=None):
     """Evaluate using cached inference.
@@ -239,12 +248,19 @@ def evaluate(model, dataloader, args, device, sharded=False, target_normalizer=N
                  accumulators. If False, rank 0 evaluates on full data.
         target_normalizer: if provided, decode predictions back to original
                  scale before computing L2 error against raw targets.
+
+    Returns:
+        dict with keys: "aggregate" (overall L2), plus per-quantity keys
+        (e.g. "p_s", "tau" for surface; "u", "p_v" for volume).
     """
     from transolver3.distributed import unwrap_ddp_model
 
     raw_model = unwrap_ddp_model(model)
     raw_model.eval()
     all_errors = []
+    # Per-quantity error accumulators
+    quantity_splits = _QUANTITY_SPLITS.get(args.field, [])
+    per_quantity_errors = {name: [] for name, _, _ in quantity_splits}
     x_key, t_key = get_field_key(args.field)
 
     if sharded:
@@ -281,18 +297,36 @@ def evaluate(model, dataloader, args, device, sharded=False, target_normalizer=N
         error = relative_l2_loss(pred, target)
         all_errors.append(error.cpu().view(1))
 
+        # Per-quantity L2 errors
+        for name, start, end in quantity_splits:
+            q_error = relative_l2_loss(pred[..., start:end], target[..., start:end])
+            per_quantity_errors[name].append(q_error.cpu().view(1))
+
     if all_errors:
         mean_error = torch.cat(all_errors).mean().item()
     else:
         mean_error = float("inf")
 
+    results = {}
+    for name, errs in per_quantity_errors.items():
+        if errs:
+            results[name] = torch.cat(errs).mean().item()
+        else:
+            results[name] = float("inf")
+
     if sharded and dist.is_initialized():
-        # Average the error across ranks for consistent reporting
+        # Average errors across ranks for consistent reporting
         error_tensor = torch.tensor([mean_error], device=device)
         dist.all_reduce(error_tensor, op=dist.ReduceOp.SUM)
         mean_error = error_tensor.item() / dist.get_world_size()
 
-    return mean_error
+        for name in results:
+            t = torch.tensor([results[name]], device=device)
+            dist.all_reduce(t, op=dist.ReduceOp.SUM)
+            results[name] = t.item() / dist.get_world_size()
+
+    results["aggregate"] = mean_error
+    return results
 
 
 def main():
@@ -454,12 +488,23 @@ def main():
 
     if args.eval_only:
         if args.shard_eval:
-            # All ranks participate in sharded eval
-            error = evaluate(model, test_loader, args, device, sharded=True, target_normalizer=target_normalizer)
-            log(f"Test relative L2 error: {error:.4f} ({error * 100:.2f}%)")
+            eval_results = evaluate(
+                model, test_loader, args, device,
+                sharded=True, target_normalizer=target_normalizer,
+            )
         elif is_main_process():
-            error = evaluate(model, test_loader, args, device, sharded=False, target_normalizer=target_normalizer)
-            log(f"Test relative L2 error: {error:.4f} ({error * 100:.2f}%)")
+            eval_results = evaluate(
+                model, test_loader, args, device,
+                sharded=False, target_normalizer=target_normalizer,
+            )
+        else:
+            eval_results = None
+        if eval_results is not None:
+            agg = eval_results["aggregate"]
+            log(f"Test relative L2 error: {agg:.4f} ({agg * 100:.2f}%)")
+            for name, val in eval_results.items():
+                if name != "aggregate":
+                    log(f"  {name}: {val:.4f} ({val * 100:.2f}%)")
         cleanup()
         return
 
@@ -554,20 +599,32 @@ def main():
 
         # Evaluate
         did_eval = (epoch + 1) % 10 == 0 or epoch == args.epochs - 1
+        eval_results = None
+        test_error = None
         if did_eval:
             if args.shard_eval:
-                test_error = evaluate(model, test_loader, args, device, sharded=True)
+                eval_results = evaluate(
+                    model, test_loader, args, device,
+                    sharded=True, target_normalizer=target_normalizer,
+                )
             elif is_main_process():
-                test_error = evaluate(model, test_loader, args, device, sharded=False)
-            else:
-                test_error = None
+                eval_results = evaluate(
+                    model, test_loader, args, device,
+                    sharded=False, target_normalizer=target_normalizer,
+                )
 
-            if is_main_process():
+            if is_main_process() and eval_results is not None:
+                test_error = eval_results["aggregate"]
+                per_q = " | ".join(
+                    f"{k}={v:.4f}" for k, v in eval_results.items()
+                    if k != "aggregate"
+                )
                 log(
                     f"Epoch {epoch + 1}/{args.epochs} | "
                     f"train_loss={train_loss:.6f} | "
-                    f"test_L2={test_error:.4f} ({test_error * 100:.2f}%) | "
-                    f"time={t1 - t0:.1f}s"
+                    f"test_L2={test_error:.4f} ({test_error * 100:.2f}%)"
+                    + (f" | {per_q}" if per_q else "")
+                    + f" | time={t1 - t0:.1f}s"
                 )
                 if test_error < best_error:
                     best_error = test_error
@@ -616,8 +673,11 @@ def main():
         if mlflow_run and is_main_process():
             mlflow.log_metric("train_loss", train_loss, step=epoch)
             mlflow.log_metric("epoch_time_s", t1 - t0, step=epoch)
-            if did_eval and test_error is not None:
-                mlflow.log_metric("test_l2", test_error, step=epoch)
+            if did_eval and eval_results is not None:
+                mlflow.log_metric("test_l2", eval_results["aggregate"], step=epoch)
+                for name, val in eval_results.items():
+                    if name != "aggregate":
+                        mlflow.log_metric(f"test_l2_{name}", val, step=epoch)
 
     log(f"\nBest test relative L2 error: {best_error:.4f} ({best_error * 100:.2f}%)")
 
