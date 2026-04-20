@@ -433,6 +433,14 @@ def main():
                     "world_size": world_size,
                     "shard_mesh": shard_mesh,
                     "seed": args.seed,
+                    "batch_size": args.batch_size,
+                    "accumulation_steps": args.accumulation_steps,
+                    "grad_clip": args.grad_clip,
+                    "patience": args.patience,
+                    "save_every": args.save_every,
+                    "cache_chunk_size": args.cache_chunk_size,
+                    "decode_chunk_size": args.decode_chunk_size,
+                    "effective_batch_size": args.batch_size * world_size * args.accumulation_steps,
                 },
             )
         except Exception as e:
