@@ -26,6 +26,9 @@ variables:
   endpoint_name:
     description: "Serving endpoint name"
     default: "transolver3-serving"
+  field:
+    description: "Field to train on: surface, volume, or both"
+    default: "surface"
   num_gpus:
     description: "Number of GPUs for distributed training"
     default: "4"

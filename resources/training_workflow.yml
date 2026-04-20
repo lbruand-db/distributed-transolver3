@@ -40,6 +40,8 @@ resources:
             parameters:
               - "--data_dir"
               - "${var.data_volume_path}"
+              - "--field"
+              - "${var.field}"
               - "--use-distributor"
               - "--num-gpus"
               - "${var.num_gpus}"
@@ -84,6 +86,8 @@ resources:
             parameters:
               - "--data_dir"
               - "${var.data_volume_path}"
+              - "--field"
+              - "${var.field}"
               - "--eval_only"
               - "--mlflow_run_id_file"
               - "${var.data_volume_path}/checkpoints/mlflow_run_id.txt"
