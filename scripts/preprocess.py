@@ -27,13 +27,23 @@ def main():
 
     spark = SparkSession.builder.getOrCreate()
 
-    print(f"Registering mesh metadata from {args.data_dir}...")
-    meta_df = register_mesh_metadata(spark, args.catalog, args.schema, "mesh_metadata", args.data_dir)
-    print(f"Registered {meta_df.count()} samples in {args.catalog}.{args.schema}.mesh_metadata")
+    import time
 
-    print("Computing per-sample statistics...")
+    print(f"[1/2] Registering mesh metadata from {args.data_dir}...", flush=True)
+    t0 = time.time()
+    meta_df = register_mesh_metadata(spark, args.catalog, args.schema, "mesh_metadata", args.data_dir)
+    t1 = time.time()
+    n_meta = meta_df.count()
+    print(f"  Registered {n_meta} samples ({t1 - t0:.1f}s)", flush=True)
+
+    print("[2/2] Computing per-sample statistics (Spark distributed)...", flush=True)
+    t0 = time.time()
     stats_df = preprocess_with_spark(spark, args.data_dir, args.catalog, args.schema, "mesh_stats")
-    print(f"Computed stats for {stats_df.count()} samples in {args.catalog}.{args.schema}.mesh_stats")
+    t1 = time.time()
+    n_stats = stats_df.count()
+    print(f"  Computed stats for {n_stats} samples ({t1 - t0:.1f}s)", flush=True)
+
+    print("Preprocessing complete.", flush=True)
 
 
 if __name__ == "__main__":

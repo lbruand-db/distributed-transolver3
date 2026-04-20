@@ -203,6 +203,7 @@ def preprocess_with_spark(spark, data_dir, catalog, schema, table):
 
     # Collect file paths
     files = [os.path.join(data_dir, f) for f in sorted(os.listdir(data_dir)) if f.endswith(".npz")]
+    print(f"  Distributing {len(files)} files across Spark workers...", flush=True)
 
     # Create a DataFrame of file paths to distribute work
     file_schema = StructType([StructField("file_path", StringType(), False)])

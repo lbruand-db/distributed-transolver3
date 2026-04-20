@@ -55,10 +55,12 @@ def register_mesh_metadata(spark, catalog, schema, table, samples_dir):
     import numpy as np
     from pyspark.sql import Row
 
+    npz_files = sorted(f for f in os.listdir(samples_dir) if f.endswith(".npz"))
+    total = len(npz_files)
+    print(f"Scanning {total} .npz files...", flush=True)
+
     rows = []
-    for fname in sorted(os.listdir(samples_dir)):
-        if not fname.endswith(".npz"):
-            continue
+    for i, fname in enumerate(npz_files):
         fpath = os.path.join(samples_dir, fname)
         sample_id = os.path.splitext(fname)[0]
 
@@ -84,6 +86,9 @@ def register_mesh_metadata(spark, catalog, schema, table, samples_dir):
                 registered_at=datetime.now(timezone.utc).isoformat(),
             )
         )
+
+        if (i + 1) % 10 == 0 or (i + 1) == total:
+            print(f"  [{i + 1}/{total}] {fname} ({surface_cells:,} surface, {volume_cells:,} volume cells)", flush=True)
 
     df = spark.createDataFrame(rows)
     full_table = f"{catalog}.{schema}.{table}"
