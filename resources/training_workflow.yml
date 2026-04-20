@@ -3,8 +3,27 @@ resources:
     transolver3_training_pipeline:
       name: "[${bundle.target}] Transolver-3 Training Pipeline"
 
+      environments:
+        - environment_key: "lightweight"
+          spec:
+            client: "1"
+            dependencies: []
+
       tasks:
+        - task_key: "generate_split"
+          description: "Generate deterministic 400/50/50 train/test/val split (paper Appendix A.2)"
+          spark_python_task:
+            python_file: ../scripts/generate_split.py
+            parameters:
+              - "--data_dir"
+              - "${var.data_volume_path}"
+              - "--seed"
+              - "42"
+          environment_key: "lightweight"
+
         - task_key: "preprocess"
+          depends_on:
+            - task_key: "generate_split"
           description: "Compute mesh statistics and register metadata in Delta"
           spark_python_task:
             python_file: ../scripts/preprocess.py
