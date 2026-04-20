@@ -174,6 +174,13 @@ def main():
     )
     args = parser.parse_args()
 
+    # UC Volumes must be pre-created; verify the base path exists
+    if not os.path.exists(args.output_dir):
+        print(f"ERROR: output_dir does not exist: {args.output_dir}", flush=True)
+        print("UC Volumes must be created beforehand via SQL:", flush=True)
+        print("  CREATE VOLUME IF NOT EXISTS <catalog>.<schema>.<volume>", flush=True)
+        raise SystemExit(1)
+
     raw_dir = os.path.join(args.output_dir, "raw")
     os.makedirs(raw_dir, exist_ok=True)
 
