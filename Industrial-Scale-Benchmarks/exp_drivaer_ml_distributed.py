@@ -89,6 +89,7 @@ def parse_args():
     parser.add_argument("--n_head", type=int, default=8)
     parser.add_argument("--slice_num", type=int, default=64)
     parser.add_argument("--num_tiles", type=int, default=8)
+    parser.add_argument("--dropout", type=float, default=0.0)
     parser.add_argument("--grad_clip", type=float, default=1.0)
     parser.add_argument(
         "--accumulation_steps",
@@ -346,7 +347,7 @@ def main():
         out_dim=out_dim,
         slice_num=args.slice_num,
         mlp_ratio=1,
-        dropout=0.0,
+        dropout=args.dropout,
         num_tiles=args.num_tiles,
     ).to(device)
     logall(f"Model created on {device}")
@@ -443,6 +444,7 @@ def main():
                     "effective_batch_size": args.batch_size * world_size * args.accumulation_steps,
                     "space_dim": space_dim,
                     "out_dim": out_dim,
+                    "dropout": args.dropout,
                 },
             )
         except Exception as e:
