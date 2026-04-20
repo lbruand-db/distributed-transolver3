@@ -167,13 +167,13 @@ def test_main_writes_split_files():
             path = os.path.join(tmpdir, name)
             assert os.path.exists(path), f"{name} not created"
             with open(path) as f:
-                lines = [l.strip() for l in f if l.strip()]
+                lines = [line.strip() for line in f if line.strip()]
             assert len(lines) > 0, f"{name} is empty"
 
         # Check sizes
         with open(os.path.join(tmpdir, "train.txt")) as f:
-            assert len([l for l in f if l.strip()]) == 30
+            assert len([line for line in f if line.strip()]) == 30
         with open(os.path.join(tmpdir, "test.txt")) as f:
-            assert len([l for l in f if l.strip()]) == 10
+            assert len([line for line in f if line.strip()]) == 10
         with open(os.path.join(tmpdir, "val.txt")) as f:
-            assert len([l for l in f if l.strip()]) == 10
+            assert len([line for line in f if line.strip()]) == 10
