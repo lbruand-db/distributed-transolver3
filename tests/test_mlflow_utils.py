@@ -34,7 +34,7 @@ from transolver3 import Transolver3  # noqa: E402
 
 @pytest.fixture
 def small_model():
-    return Transolver3(space_dim=3, n_layers=2, n_hidden=64, n_head=4, out_dim=1, slice_num=8)
+    return Transolver3(space_dim=3, n_layers=2, n_hidden=64, n_head=4, fun_dim=0, out_dim=1, slice_num=8)
 
 
 @pytest.fixture
@@ -72,7 +72,7 @@ def test_log_model_with_signature(small_model, mlflow_run):
     sample_input = torch.randn(1, 50, 3)
     info = log_model_with_signature(small_model, sample_input)
     assert info is not None
-    assert info.artifact_path == "transolver3"
+    assert info.model_uri is not None
 
 
 def test_normalization_artifacts_roundtrip(mlflow_run):

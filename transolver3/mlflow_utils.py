@@ -157,13 +157,18 @@ def load_normalization_artifacts(run_id):
 
     input_path = os.path.join(artifact_dir, "input_normalizer.pt")
     if os.path.exists(input_path):
+        state = torch.load(input_path, weights_only=True)
         input_norm = InputNormalizer()
-        input_norm.load_state_dict(torch.load(input_path, weights_only=True))
+        # Buffers may have different shapes after fit, so assign directly
+        for k, v in state.items():
+            setattr(input_norm, k, v)
 
     target_path = os.path.join(artifact_dir, "target_normalizer.pt")
     if os.path.exists(target_path):
+        state = torch.load(target_path, weights_only=True)
         target_norm = TargetNormalizer()
-        target_norm.load_state_dict(torch.load(target_path, weights_only=True))
+        for k, v in state.items():
+            setattr(target_norm, k, v)
 
     return input_norm, target_norm
 

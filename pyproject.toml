@@ -63,3 +63,12 @@ call-non-callable = "ignore"
 invalid-method-override = "ignore"
 # pyspark and dataset.drivaer_ml use runtime sys.path manipulation
 unresolved-import = "ignore"
+
+[dependency-groups]
+dev = [
+    "mlflow>=3.10.1",
+    "pandas>=2.3.3",
+    "psutil>=7.2.2",
+    "pytest>=9.0.2",
+    "scipy>=1.15.3",
+]
