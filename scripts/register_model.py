@@ -18,16 +18,25 @@ import os
 _this_dir = os.path.dirname(os.path.abspath(__file__)) if "__file__" in dir() else os.getcwd()
 sys.path.insert(0, os.path.join(_this_dir, ".."))
 
-import mlflow  # noqa: E402
+try:
+    import mlflow  # noqa: E402
+
+    _HAS_MLFLOW = True
+except ImportError:
+    _HAS_MLFLOW = False
 
 
-def build_model_description(run_id):
-    """Build a model card description from the MLflow run's params and metrics."""
-    client = mlflow.tracking.MlflowClient()
-    run = client.get_run(run_id)
-    params = run.data.params
-    metrics = run.data.metrics
+def format_model_card(params, metrics, run_id="unknown"):
+    """Format a model card from params and metrics dicts.
 
+    Args:
+        params: dict of hyperparameters (string keys and values)
+        metrics: dict of metric names to float values
+        run_id: MLflow run ID for reference
+
+    Returns:
+        Markdown-formatted model card string
+    """
     field = params.get("field", "unknown")
     lines = [
         f"# Transolver-3 ({field})",
@@ -82,6 +91,41 @@ def build_model_description(run_id):
     return "\n".join(lines)
 
 
+def build_model_description(run_id):
+    """Build a model card description from the MLflow run's params and metrics."""
+    client = mlflow.tracking.MlflowClient()
+    run = client.get_run(run_id)
+    return format_model_card(run.data.params, run.data.metrics, run_id)
+
+
+def compute_metric_deltas(current_metrics, previous_metrics):
+    """Compute deltas between current and previous run metrics.
+
+    Args:
+        current_metrics: dict of current run metric names to float values
+        previous_metrics: dict of previous run metric names to float values
+
+    Returns:
+        dict of metric deltas (negative = improvement). Keys: "aggregate"
+        plus any per-quantity keys present in both runs.
+    """
+    current_l2 = current_metrics.get("best_test_l2")
+    prev_l2 = previous_metrics.get("best_test_l2")
+
+    if current_l2 is None or prev_l2 is None:
+        return {}
+
+    deltas = {"aggregate": current_l2 - prev_l2}
+
+    for key in ["test_l2_p_s", "test_l2_tau", "test_l2_u", "test_l2_p_v"]:
+        curr = current_metrics.get(key)
+        prev = previous_metrics.get(key)
+        if curr is not None and prev is not None:
+            deltas[key] = curr - prev
+
+    return deltas
+
+
 def compare_with_previous_best(run_id):
     """Compare this run's metrics with the previous best run in the experiment.
 
@@ -115,7 +159,8 @@ def compare_with_previous_best(run_id):
     prev_l2 = prev_run.data.metrics.get("best_test_l2")
     prev_id = prev_run.info.run_id
 
-    delta = current_l2 - prev_l2
+    deltas = compute_metric_deltas(current_run.data.metrics, prev_run.data.metrics)
+    delta = deltas.get("aggregate", 0)
     pct = (delta / prev_l2) * 100 if prev_l2 else 0
     improved = delta < 0
 
@@ -133,14 +178,10 @@ def compare_with_previous_best(run_id):
         mlflow.log_param("previous_best_run_id", prev_id)
         mlflow.log_param("previous_best_l2", prev_l2)
 
-    # Per-quantity deltas
-    deltas = {"aggregate": delta}
-    for key in ["test_l2_p_s", "test_l2_tau", "test_l2_u", "test_l2_p_v"]:
-        curr = current_run.data.metrics.get(key)
-        prev = prev_run.data.metrics.get(key)
-        if curr is not None and prev is not None:
-            d = curr - prev
-            deltas[key] = d
+    for key, d in deltas.items():
+        if key != "aggregate":
+            prev = prev_run.data.metrics.get(key)
+            curr = current_run.data.metrics.get(key)
             print(f"  {key}: {prev:.4f} -> {curr:.4f} (delta {d:+.4f})")
 
     return deltas
