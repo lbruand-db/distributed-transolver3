@@ -21,6 +21,8 @@ Usage:
 import argparse
 import csv
 import os
+import shutil
+import tempfile
 
 import numpy as np
 
@@ -113,15 +115,22 @@ def convert_one(run_id, data_dir):
     if wall_shear.ndim == 1:
         wall_shear = wall_shear[:, None]
 
-    # Save NPZ
-    np.savez(
-        out_path,
-        params=params,
-        surface_coords=coords,
-        surface_normals=normals,
-        surface_pressure=pressure,
-        surface_wall_shear=wall_shear,
-    )
+    # Save NPZ — write to local temp file first, then copy to UC Volume.
+    # Direct np.savez to FUSE-mounted UC Volumes can fail with IOError.
+    with tempfile.NamedTemporaryFile(suffix=".npz", delete=False) as tmp:
+        tmp_path = tmp.name
+    try:
+        np.savez(
+            tmp_path,
+            params=params,
+            surface_coords=coords,
+            surface_normals=normals,
+            surface_pressure=pressure,
+            surface_wall_shear=wall_shear,
+        )
+        shutil.copy2(tmp_path, out_path)
+    finally:
+        os.unlink(tmp_path)
     size_mb = os.path.getsize(out_path) / 1024**2
     print(f"  Saved {out_path} ({size_mb:.1f} MB, {coords.shape[0]:,} cells)", flush=True)
 
