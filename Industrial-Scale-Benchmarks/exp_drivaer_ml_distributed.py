@@ -56,6 +56,7 @@ from transolver3.distributed import (
     log,
     logall,
 )
+from transolver3.normalizer import TargetNormalizer
 from dataset.drivaer_ml import DrivAerMLDataset
 
 # Optional MLflow integration (guarded import)
@@ -166,7 +167,7 @@ def get_field_key(field):
     return f"{field}_x", f"{field}_target"
 
 
-def train_epoch(model, dataloader, optimizer, scheduler, sampler, args, device, scaler=None):
+def train_epoch(model, dataloader, optimizer, scheduler, sampler, args, device, scaler=None, target_normalizer=None):
     model.train()
     total_loss = 0.0
     count = 0
@@ -183,6 +184,10 @@ def train_epoch(model, dataloader, optimizer, scheduler, sampler, args, device, 
         indices = sampler.sample(N).to(device)
         x_sub = x[:, indices]
         target_sub = target[:, indices]
+
+        # Normalize targets so model learns in z-score space (paper Appendix A.3)
+        if target_normalizer is not None:
+            target_sub = target_normalizer.encode(target_sub)
 
         # Scale loss by accumulation steps so gradients average correctly
         with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=scaler is not None):
@@ -214,7 +219,7 @@ def train_epoch(model, dataloader, optimizer, scheduler, sampler, args, device, 
 
 
 @torch.no_grad()
-def evaluate(model, dataloader, args, device, sharded=False):
+def evaluate(model, dataloader, args, device, sharded=False, target_normalizer=None):
     """Evaluate using cached inference.
 
     Args:
@@ -225,6 +230,8 @@ def evaluate(model, dataloader, args, device, sharded=False):
         sharded: if True, use DistributedCachedInference where each rank
                  processes its mesh shard and all-reduces the tiny cache
                  accumulators. If False, rank 0 evaluates on full data.
+        target_normalizer: if provided, decode predictions back to original
+                 scale before computing L2 error against raw targets.
     """
     from transolver3.distributed import unwrap_ddp_model
 
@@ -259,6 +266,10 @@ def evaluate(model, dataloader, args, device, sharded=False):
         else:
             cache = engine.build_cache(x)
             pred = engine.decode(x, cache)
+
+        # Decode predictions back to original scale for fair comparison
+        if target_normalizer is not None:
+            pred = target_normalizer.decode(pred)
 
         error = relative_l2_loss(pred, target)
         all_errors.append(error.cpu().view(1))
@@ -378,6 +389,48 @@ def main():
     n_params = sum(p.numel() for p in model.parameters())
     log(f"Model parameters: {n_params:,}")
 
+    # --- Target normalization (paper Appendix A.3) ---
+    # Fit z-score stats by streaming over training targets. Each rank computes
+    # stats on its own shard; for correctness with sharded meshes we all-reduce
+    # the running sums so every rank has identical mean/std.
+    target_normalizer = TargetNormalizer(out_dim=out_dim).to(device)
+    log("Fitting target normalizer on training set...")
+
+    def _target_iter():
+        for i in range(len(train_dataset)):
+            sample = train_dataset[i]
+            yield sample[t_key]
+
+    target_normalizer.fit_incremental(_target_iter())
+
+    if dist.is_initialized():
+        # All-reduce to get global stats across all shards
+        # Convert to sum/count representation for correct distributed averaging
+        n_local = torch.tensor([len(train_dataset)], dtype=torch.float64, device=device)
+        dist.all_reduce(n_local, op=dist.ReduceOp.SUM)
+
+        mean_sum = (target_normalizer.mean.double() * len(train_dataset)).to(device)
+        dist.all_reduce(mean_sum, op=dist.ReduceOp.SUM)
+        global_mean = mean_sum / n_local
+
+        # For std, we need the global variance: Var = E[X^2] - E[X]^2
+        # local std includes eps, but we recompute from scratch
+        local_var = (target_normalizer.std.double() - target_normalizer.eps) ** 2
+        var_sum = (local_var * len(train_dataset)).to(device)
+        mean_sq_sum = (target_normalizer.mean.double() ** 2 * len(train_dataset)).to(device)
+        dist.all_reduce(var_sum, op=dist.ReduceOp.SUM)
+        dist.all_reduce(mean_sq_sum, op=dist.ReduceOp.SUM)
+
+        # Global variance = avg(local_var) + avg(local_mean^2) - global_mean^2
+        global_var = var_sum / n_local + mean_sq_sum / n_local - global_mean**2
+        global_std = torch.sqrt(global_var.clamp(min=0)) + target_normalizer.eps
+
+        target_normalizer.mean = global_mean.float().reshape(1, 1, -1)
+        target_normalizer.std = global_std.float().reshape(1, 1, -1)
+
+    log(f"Target normalizer: mean={target_normalizer.mean.squeeze().tolist()}, "
+        f"std={target_normalizer.std.squeeze().tolist()}")
+
     if args.mlflow_run_id_file and os.path.exists(args.mlflow_run_id_file):
         # Load model from MLflow (preferred over --checkpoint)
         with open(args.mlflow_run_id_file) as f:
@@ -395,10 +448,10 @@ def main():
     if args.eval_only:
         if args.shard_eval:
             # All ranks participate in sharded eval
-            error = evaluate(model, test_loader, args, device, sharded=True)
+            error = evaluate(model, test_loader, args, device, sharded=True, target_normalizer=target_normalizer)
             log(f"Test relative L2 error: {error:.4f} ({error * 100:.2f}%)")
         elif is_main_process():
-            error = evaluate(model, test_loader, args, device, sharded=False)
+            error = evaluate(model, test_loader, args, device, sharded=False, target_normalizer=target_normalizer)
             log(f"Test relative L2 error: {error:.4f} ({error * 100:.2f}%)")
         cleanup()
         return
@@ -484,7 +537,10 @@ def main():
     for epoch in range(start_epoch, args.epochs):
         train_sampler.set_epoch(epoch)  # shuffle differently each epoch
         t0 = time.time()
-        train_loss = train_epoch(model, train_loader, optimizer, scheduler, mesh_sampler, args, device, scaler=scaler)
+        train_loss = train_epoch(
+            model, train_loader, optimizer, scheduler, mesh_sampler, args, device,
+            scaler=scaler, target_normalizer=target_normalizer,
+        )
         t1 = time.time()
 
         # Evaluate
@@ -508,6 +564,7 @@ def main():
                     best_error = test_error
                     evals_without_improvement = 0
                     torch.save(model.module.state_dict(), os.path.join(args.save_dir, "best_model.pt"))
+                    torch.save(target_normalizer.state_dict(), os.path.join(args.save_dir, "target_normalizer.pt"))
                 else:
                     evals_without_improvement += 1
 
@@ -537,6 +594,7 @@ def main():
                     "optimizer": optimizer.state_dict(),
                     "scheduler": scheduler.state_dict(),
                     "best_error": best_error,
+                    "target_normalizer": target_normalizer.state_dict(),
                 }
                 if scaler is not None:
                     ckpt_data["scaler"] = scaler.state_dict()
