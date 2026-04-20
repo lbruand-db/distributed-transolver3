@@ -73,36 +73,28 @@ checkpoint or serialization bug would propagate to the serving endpoint.
 
 ## Important — Standard MLOps Practice
 
-### MLOPS-4: No Model Card / Metadata
+### MLOPS-4: No Model Card / Metadata — RESOLVED
 
-**Problem**: No structured description of what the model does, its
-limitations, expected input/output schema, or performance characteristics
-is logged with the model in the registry.
+**Status**: Fixed in `cb6d3e8`.
 
-**Fix**: Set `model_description` when registering the model version:
-- Field type (surface / volume)
-- Training dataset and split
-- Best L2 error and per-quantity breakdown
-- Input schema (space_dim, expected coordinate range)
-- Output schema (out_dim, physical quantities)
-- Known limitations (mesh size constraints, memory requirements)
-
-**Effort**: Medium — update `register_model.py`.
+**Implementation**: `register_model.py` now builds a structured model card
+from the MLflow run's params and metrics via `build_model_description()`.
+The card includes performance (per-quantity L2), architecture config,
+training configuration, and limitations. Set as the version description
+in UC Model Registry via `client.update_model_version()`.
 
 ---
 
-### MLOPS-5: Dependencies Not Pinned
+### MLOPS-5: Dependencies Not Pinned — RESOLVED
 
-**Problem**: Pipeline specifies loose version ranges (`einops>=0.7`,
-`timm>=1.0`, `torch>=2.0`). A training run today may use different
-package versions than one next month, silently affecting reproducibility.
+**Status**: Fixed in `79ba9b3`.
 
-**Fix**:
-- Pin exact versions in the DAB YAML environments and cluster libraries
-- Log installed package versions as MLflow params at training start
-- Consider using a `requirements.txt` or `uv.lock` snapshot per run
-
-**Effort**: Low.
+**Implementation**:
+- Pinned exact versions in `training_workflow.yml`: `einops==0.8.2`,
+  `timm==1.0.25`, `mlflow==2.22.0`
+- At training start, `exp_drivaer_ml_distributed.py` logs installed
+  versions of torch, einops, timm, numpy, mlflow, and Python as
+  MLflow params (`pkg_torch`, `pkg_einops`, etc.).
 
 ---
 
@@ -188,33 +180,31 @@ custom_tags:
 
 ---
 
-### MLOPS-11: No Experiment Comparison
+### MLOPS-11: No Experiment Comparison — RESOLVED
 
-**Problem**: No automated comparison between the new training run and the
-previous best run. Users must manually check MLflow to see if the new
-model is better.
+**Status**: Fixed in `d9bdc81`.
 
-**Fix**:
-- In the validation task, query MLflow for the previous best run
-- Log `delta_vs_previous` metric (improvement or regression)
-- Fail the pipeline if the new model regresses significantly
-
-**Effort**: Medium.
+**Implementation**: `register_model.py` now calls `compare_with_previous_best()`
+before registering. This queries MLflow for the previous best run with the
+same field, computes the delta on `best_test_l2` and all per-quantity
+metrics (`test_l2_p_s`, `test_l2_tau`, etc.), prints a clear
+improvement/regression report, and logs `delta_vs_previous` and
+`previous_best_run_id` back to the current MLflow run.
 
 ---
 
 ## Priority Matrix
 
-| Gap | Severity | Effort | Priority |
-|-----|----------|--------|----------|
-| MLOPS-1: Quality gate | Critical | Low | **P0** |
-| MLOPS-2: Data versioning | Critical | Low | **P0** |
-| MLOPS-3: Model smoke test | Critical | Low | **P0** |
-| MLOPS-4: Model card | Important | Medium | P1 |
-| MLOPS-5: Pin dependencies | Important | Low | **P1** |
-| MLOPS-6: Alerting | Important | Low-Med | P1 |
-| MLOPS-7: Checkpoint cleanup | Important | Low | P1 |
-| MLOPS-8: Canary deployment | Important | High | P2 |
-| MLOPS-9: Drift monitoring | Nice to have | Medium | P2 |
-| MLOPS-10: Cost tagging | Nice to have | Low | P2 |
-| MLOPS-11: Experiment comparison | Nice to have | Medium | P2 |
+| Gap | Severity | Effort | Status |
+|-----|----------|--------|--------|
+| MLOPS-1: Quality gate | Critical | Low | Open |
+| MLOPS-2: Data versioning | Critical | Low | Open |
+| MLOPS-3: Model smoke test | Critical | Low | Open |
+| MLOPS-4: Model card | Important | Medium | **RESOLVED** |
+| MLOPS-5: Pin dependencies | Important | Low | **RESOLVED** |
+| MLOPS-6: Alerting | Important | Low-Med | Open |
+| MLOPS-7: Checkpoint cleanup | Important | Low | Open |
+| MLOPS-8: Canary deployment | Important | High | Open |
+| MLOPS-9: Drift monitoring | Nice to have | Medium | Open |
+| MLOPS-10: Cost tagging | Nice to have | Low | Open |
+| MLOPS-11: Experiment comparison | Nice to have | Medium | **RESOLVED** |
