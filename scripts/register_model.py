@@ -21,6 +21,67 @@ sys.path.insert(0, os.path.join(_this_dir, ".."))
 import mlflow  # noqa: E402
 
 
+def build_model_description(run_id):
+    """Build a model card description from the MLflow run's params and metrics."""
+    client = mlflow.tracking.MlflowClient()
+    run = client.get_run(run_id)
+    params = run.data.params
+    metrics = run.data.metrics
+
+    field = params.get("field", "unknown")
+    lines = [
+        f"# Transolver-3 ({field})",
+        "",
+        "Physics-informed transformer solver for industrial-scale CFD.",
+        "Trained on DrivAerML dataset with geometry amortized training.",
+        "",
+        "## Performance",
+        "",
+        f"- **Best test L2**: {float(metrics.get('best_test_l2', 0)):.4f} "
+        f"({float(metrics.get('best_test_l2', 0)) * 100:.2f}%)",
+    ]
+
+    # Per-quantity metrics
+    for key in ["test_l2_p_s", "test_l2_tau", "test_l2_u", "test_l2_p_v"]:
+        if key in metrics:
+            name = key.replace("test_l2_", "")
+            lines.append(f"- **{name}**: {float(metrics[key]):.4f} ({float(metrics[key]) * 100:.2f}%)")
+
+    lines += [
+        "",
+        "## Architecture",
+        "",
+        f"- Layers: {params.get('n_layers', '?')}",
+        f"- Hidden dim: {params.get('n_hidden', '?')}",
+        f"- Heads: {params.get('n_head', '?')}",
+        f"- Slices: {params.get('slice_num', '?')}",
+        f"- Parameters: {params.get('model_parameters', '?')}",
+        f"- Input dim (space_dim): {params.get('space_dim', '?')}",
+        f"- Output dim: {params.get('out_dim', '?')}",
+        "",
+        "## Training Configuration",
+        "",
+        f"- Field: {field}",
+        f"- Epochs: {params.get('epochs', '?')}",
+        f"- LR: {params.get('lr', '?')}",
+        f"- Weight decay: {params.get('weight_decay', '?')}",
+        f"- Subset size: {params.get('subset_size', '?')}",
+        f"- Batch size: {params.get('batch_size', '?')} "
+        f"(effective: {params.get('effective_batch_size', '?')})",
+        f"- AMP: {params.get('amp', '?')}",
+        f"- World size: {params.get('world_size', '?')}",
+        f"- Seed: {params.get('seed', '?')}",
+        "",
+        "## Limitations",
+        "",
+        "- Trained on DrivAerML surface/volume meshes only",
+        "- Expects min-max normalized coordinates scaled by 1000",
+        "- Target normalizer (z-score) must be applied at inference time",
+        f"- MLflow run: `{run_id}`",
+    ]
+    return "\n".join(lines)
+
+
 def register_from_mlflow_run(run_id, catalog, schema, model_name):
     """Promote an already-logged model from an MLflow run to UC Model Registry."""
     registered_name = f"{catalog}.{schema}.{model_name}"
@@ -29,6 +90,20 @@ def register_from_mlflow_run(run_id, catalog, schema, model_name):
     print(f"Promoting model from run {run_id} to {registered_name}...")
     result = mlflow.register_model(model_uri, registered_name)
     print(f"Registered: {registered_name} version {result.version}")
+
+    # Set model version description (model card)
+    try:
+        description = build_model_description(run_id)
+        client = mlflow.tracking.MlflowClient()
+        client.update_model_version(
+            name=registered_name,
+            version=result.version,
+            description=description,
+        )
+        print(f"Set model card for version {result.version}")
+    except Exception as e:
+        print(f"WARNING: Could not set model description: {e}")
+
     return result
 
 
