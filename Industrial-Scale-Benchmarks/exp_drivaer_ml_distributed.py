@@ -78,6 +78,13 @@ def parse_args():
     parser.add_argument("--epochs", type=int, default=500)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--weight_decay", type=float, default=0.05)
+    parser.add_argument(
+        "--no-scale-lr",
+        action="store_true",
+        dest="no_scale_lr",
+        help="Disable linear LR scaling by world_size. Use the exact --lr value. "
+        "The paper does not mention LR scaling; use this flag for paper reproduction.",
+    )
     parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument(
         "--subset_size",
@@ -457,8 +464,8 @@ def main():
         return
 
     # --- Training ---
-    # Scale LR by world_size (linear scaling rule)
-    scaled_lr = args.lr * world_size
+    # Scale LR by world_size (linear scaling rule) unless --no-scale-lr
+    scaled_lr = args.lr if args.no_scale_lr else args.lr * world_size
     optimizer = create_optimizer(model, lr=scaled_lr, weight_decay=args.weight_decay)
     total_steps = args.epochs * len(train_loader)
     scheduler = create_scheduler(optimizer, total_steps)
@@ -485,7 +492,8 @@ def main():
         best_error = ckpt.get("best_error", float("inf"))
         log(f"Resumed from epoch {ckpt['epoch']}, best_error={best_error:.4f}, continuing at epoch {start_epoch}")
 
-    log(f"Training: epochs {start_epoch + 1}-{args.epochs}, lr={scaled_lr:.1e} (scaled {world_size}x)")
+    lr_msg = f"lr={scaled_lr:.1e}" + ("" if args.no_scale_lr else f" (scaled {world_size}x)")
+    log(f"Training: epochs {start_epoch + 1}-{args.epochs}, {lr_msg}")
     log(f"Tiles: {args.num_tiles}, Cache chunks: {args.cache_chunk_size:,}")
 
     # --- MLflow tracking (rank 0 only) ---
@@ -524,6 +532,7 @@ def main():
                     "out_dim": out_dim,
                     "dropout": args.dropout,
                     "amp": args.amp,
+                    "no_scale_lr": args.no_scale_lr,
                 },
             )
         except Exception as e:
