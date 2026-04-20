@@ -441,6 +441,8 @@ def main():
                     "cache_chunk_size": args.cache_chunk_size,
                     "decode_chunk_size": args.decode_chunk_size,
                     "effective_batch_size": args.batch_size * world_size * args.accumulation_steps,
+                    "space_dim": space_dim,
+                    "out_dim": out_dim,
                 },
             )
         except Exception as e:
