@@ -1,3 +1,6 @@
+  # Prerequisites (run these jobs first):
+  #   1. download_drivaer_raw  — download raw VTP files from HuggingFace
+  #   2. convert_vtp_to_npz    — convert VTP to NPZ format
 resources:
   jobs:
     transolver3_training_pipeline:
