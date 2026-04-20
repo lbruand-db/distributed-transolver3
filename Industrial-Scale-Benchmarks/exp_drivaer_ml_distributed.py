@@ -523,7 +523,10 @@ def main():
     # Scale LR by world_size (linear scaling rule) unless --no-scale-lr
     scaled_lr = args.lr if args.no_scale_lr else args.lr * world_size
     optimizer = create_optimizer(model, lr=scaled_lr, weight_decay=args.weight_decay)
-    total_steps = args.epochs * len(train_loader)
+    # Scheduler total_steps = number of optimizer steps (not backward passes).
+    # With gradient accumulation, optimizer steps happen every accum batches.
+    steps_per_epoch = (len(train_loader) + args.accumulation_steps - 1) // args.accumulation_steps
+    total_steps = args.epochs * steps_per_epoch
     scheduler = create_scheduler(optimizer, total_steps)
 
     # Mixed precision (paper Appendix A.4)
