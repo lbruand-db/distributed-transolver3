@@ -37,7 +37,7 @@ def _require_pyspark():
         raise ImportError("pyspark is required for data_catalog. Install with: pip install transolver3[databricks]")
 
 
-def register_mesh_metadata(spark, catalog, schema, table, samples_dir):
+def register_mesh_metadata(spark, catalog, schema, table, samples_dir, workers=8):
     """Scan .npz files and register mesh metadata in a Delta table.
 
     Args:
@@ -47,48 +47,58 @@ def register_mesh_metadata(spark, catalog, schema, table, samples_dir):
         table: Table name (e.g., "mesh_metadata")
         samples_dir: Path to directory containing .npz sample files
             (local path or UC Volume path like /Volumes/catalog/schema/volume/)
+        workers: Number of concurrent threads for I/O (default 8)
 
     Returns:
         PySpark DataFrame of the registered metadata
     """
     _require_pyspark()
+    import threading
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     import numpy as np
     from pyspark.sql import Row
 
     npz_files = sorted(f for f in os.listdir(samples_dir) if f.endswith(".npz"))
     total = len(npz_files)
-    print(f"Scanning {total} .npz files...", flush=True)
+    print(f"Scanning {total} .npz files ({workers} threads)...", flush=True)
 
-    rows = []
-    for i, fname in enumerate(npz_files):
+    def _scan_one(fname):
         fpath = os.path.join(samples_dir, fname)
         sample_id = os.path.splitext(fname)[0]
-
         data = np.load(fpath, mmap_mode="r")
         keys = list(data.keys())
-
         surface_cells = int(data["surface_coords"].shape[0]) if "surface_coords" in keys else 0
         volume_cells = int(data["volume_coords"].shape[0]) if "volume_coords" in keys else 0
         params_dim = int(data["params"].shape[0]) if "params" in keys else 0
         file_size_bytes = os.path.getsize(fpath)
-
-        rows.append(
-            Row(
-                sample_id=sample_id,
-                file_name=fname,
-                file_path=fpath,
-                surface_cells=surface_cells,
-                volume_cells=volume_cells,
-                total_cells=surface_cells + volume_cells,
-                params_dim=params_dim,
-                available_keys=json.dumps(keys),
-                file_size_bytes=file_size_bytes,
-                registered_at=datetime.now(timezone.utc).isoformat(),
-            )
+        return Row(
+            sample_id=sample_id,
+            file_name=fname,
+            file_path=fpath,
+            surface_cells=surface_cells,
+            volume_cells=volume_cells,
+            total_cells=surface_cells + volume_cells,
+            params_dim=params_dim,
+            available_keys=json.dumps(keys),
+            file_size_bytes=file_size_bytes,
+            registered_at=datetime.now(timezone.utc).isoformat(),
         )
 
-        if (i + 1) % 10 == 0 or (i + 1) == total:
-            print(f"  [{i + 1}/{total}] {fname} ({surface_cells:,} surface, {volume_cells:,} volume cells)", flush=True)
+    lock = threading.Lock()
+    completed = [0]
+    rows = []
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {pool.submit(_scan_one, f): f for f in npz_files}
+        for future in as_completed(futures):
+            row = future.result()
+            rows.append(row)
+            with lock:
+                completed[0] += 1
+                n = completed[0]
+            if n % 50 == 0 or n == total:
+                print(f"  [{n}/{total}] scanned", flush=True)
 
     df = spark.createDataFrame(rows)
     full_table = f"{catalog}.{schema}.{table}"
