@@ -1,0 +1,25 @@
+resources:
+  jobs:
+    download_drivaer_raw:
+      name: "[${bundle.target}] Download Raw DrivAerML from HuggingFace"
+
+      tasks:
+        - task_key: "download"
+          description: "Download raw VTP + CSV files from HuggingFace into UC Volume"
+          spark_python_task:
+            python_file: ../scripts/download_drivaer_raw.py
+            parameters:
+              - "--output_dir"
+              - "${var.data_volume_path}"
+          libraries:
+            - pypi:
+                package: "huggingface_hub>=0.20"
+          new_cluster:
+            spark_version: "15.4.x-scala2.12"
+            node_type_id: "i3.2xlarge"
+            num_workers: 0
+            spark_conf:
+              "spark.master": "local[*]"
+              "spark.databricks.cluster.profile": "singleNode"
+            custom_tags:
+              "ResourceClass": "SingleNode"
