@@ -82,10 +82,80 @@ def build_model_description(run_id):
     return "\n".join(lines)
 
 
+def compare_with_previous_best(run_id):
+    """Compare this run's metrics with the previous best run in the experiment.
+
+    Returns a dict of metric deltas (negative = improvement).
+    """
+    client = mlflow.tracking.MlflowClient()
+    current_run = client.get_run(run_id)
+    experiment_id = current_run.info.experiment_id
+    current_field = current_run.data.params.get("field", "")
+    current_l2 = current_run.data.metrics.get("best_test_l2")
+
+    if current_l2 is None:
+        print("  No best_test_l2 metric in current run, skipping comparison.")
+        return {}
+
+    # Search for previous completed runs with the same field
+    runs = client.search_runs(
+        experiment_ids=[experiment_id],
+        filter_string=f"params.field = '{current_field}' "
+        f"AND metrics.best_test_l2 > 0 "
+        f"AND attributes.run_id != '{run_id}'",
+        order_by=["metrics.best_test_l2 ASC"],
+        max_results=1,
+    )
+
+    if not runs:
+        print("  No previous runs found for comparison.")
+        return {}
+
+    prev_run = runs[0]
+    prev_l2 = prev_run.data.metrics.get("best_test_l2")
+    prev_id = prev_run.info.run_id
+
+    delta = current_l2 - prev_l2
+    pct = (delta / prev_l2) * 100 if prev_l2 else 0
+    improved = delta < 0
+
+    print(f"\n{'=' * 50}")
+    print(f"  Comparison with previous best (run {prev_id[:8]}...):")
+    print(f"    Previous best L2: {prev_l2:.4f} ({prev_l2 * 100:.2f}%)")
+    print(f"    Current L2:       {current_l2:.4f} ({current_l2 * 100:.2f}%)")
+    print(f"    Delta:            {delta:+.4f} ({pct:+.1f}%)")
+    print(f"    {'IMPROVED' if improved else 'REGRESSED'}")
+    print(f"{'=' * 50}\n")
+
+    # Log comparison metrics back to the current run
+    with mlflow.start_run(run_id=run_id, nested=True):
+        mlflow.log_metric("delta_vs_previous", delta)
+        mlflow.log_param("previous_best_run_id", prev_id)
+        mlflow.log_param("previous_best_l2", prev_l2)
+
+    # Per-quantity deltas
+    deltas = {"aggregate": delta}
+    for key in ["test_l2_p_s", "test_l2_tau", "test_l2_u", "test_l2_p_v"]:
+        curr = current_run.data.metrics.get(key)
+        prev = prev_run.data.metrics.get(key)
+        if curr is not None and prev is not None:
+            d = curr - prev
+            deltas[key] = d
+            print(f"  {key}: {prev:.4f} -> {curr:.4f} (delta {d:+.4f})")
+
+    return deltas
+
+
 def register_from_mlflow_run(run_id, catalog, schema, model_name):
     """Promote an already-logged model from an MLflow run to UC Model Registry."""
     registered_name = f"{catalog}.{schema}.{model_name}"
     model_uri = f"runs:/{run_id}/transolver3"
+
+    # Compare with previous best before registering
+    try:
+        compare_with_previous_best(run_id)
+    except Exception as e:
+        print(f"WARNING: Experiment comparison failed: {e}")
 
     print(f"Promoting model from run {run_id} to {registered_name}...")
     result = mlflow.register_model(model_uri, registered_name)
