@@ -190,17 +190,26 @@ Log each to MLflow as separate metrics.
 
 | Gap | Status | Severity | Effort |
 |-----|--------|----------|--------|
-| GAP2-1: Mixed precision | Missing | High | Low |
-| GAP2-2: Target normalization | Missing | High | Medium |
+| GAP2-1: Mixed precision | **RESOLVED** — `--amp` flag added | High | Low |
+| GAP2-2: Target normalization | **RESOLVED** — `TargetNormalizer` fitted + used | High | Medium |
 | GAP2-3: Input normalization | OK | — | — |
 | GAP2-4: LR schedule | OK | — | — |
-| GAP2-5: LR scaling | Uncertain | Medium | Low |
-| GAP2-6: Volume field run | Missing pipeline | Medium | Low |
-| GAP2-7: Data split files | Missing | Medium | Low |
-| GAP2-8: Per-quantity metrics | Missing | Medium | Medium |
+| GAP2-5: LR scaling | **RESOLVED** — `--no-scale-lr` flag added | Medium | Low |
+| GAP2-6: Volume field run | **RESOLVED** — `field` variable in DAB pipeline | Medium | Low |
+| GAP2-7: Data split files | **RESOLVED** — `scripts/generate_split.py` | Medium | Low |
+| GAP2-8: Per-quantity metrics | **RESOLVED** — per-quantity L2 in eval + MLflow | Medium | Medium |
 
-**Priority order** (to match paper numbers):
-1. GAP2-1 (AMP) + GAP2-2 (target normalization) — most likely to affect L2 numbers
-2. GAP2-8 (per-quantity metrics) — needed to compare with Table 4
-3. GAP2-5 (LR scaling) — verify whether it helps or hurts
-4. GAP2-6 (volume run) + GAP2-7 (split files) — needed for full reproduction
+All gaps have been addressed. To reproduce the paper's DrivAerML results:
+
+```bash
+# 1. Generate the data split
+python scripts/generate_split.py --data_dir /path/to/data --seed 42
+
+# 2. Train surface model (p_s, tau)
+databricks bundle run transolver3_training_pipeline -t a10g \
+  -v field=surface --profile DEFAULT
+
+# 3. Train volume model (u, p_v)
+databricks bundle run transolver3_training_pipeline -t a10g \
+  -v field=volume --profile DEFAULT
+```
