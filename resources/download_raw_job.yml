@@ -11,15 +11,13 @@ resources:
             parameters:
               - "--output_dir"
               - "${var.data_volume_path}"
-          libraries:
-            - pypi:
-                package: "huggingface_hub>=0.20"
-          new_cluster:
-            spark_version: "15.4.x-scala2.12"
-            node_type_id: "i3.2xlarge"
-            num_workers: 0
-            spark_conf:
-              "spark.master": "local[*]"
-              "spark.databricks.cluster.profile": "singleNode"
-            custom_tags:
-              "ResourceClass": "SingleNode"
+              - "--workers"
+              - "8"
+          environment_key: "default"
+
+      environments:
+        - environment_key: "default"
+          spec:
+            client: "1"
+            dependencies:
+              - "huggingface_hub>=0.20"

@@ -19,12 +19,16 @@ Usage (Databricks job or local):
     python scripts/download_drivaer_raw.py \
         --output_dir /Volumes/lucasbruand_catalog/cfd/data \
         [--runs 56 58 60]          # specific runs, or omit for all
+        [--workers 8]              # concurrent downloads (default: 8)
         [--dry-run]                # list what would be downloaded
 """
 
 import argparse
 import os
 import shutil
+import tempfile
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 HF_REPO = "neashton/drivaerml"
@@ -58,7 +62,6 @@ def get_existing_run_ids(raw_dir):
         run_dir = os.path.join(raw_dir, entry)
         if not os.path.isdir(run_dir):
             continue
-        # Check that the VTP file actually exists
         run_id = int(m.group(1))
         vtp = os.path.join(run_dir, f"boundary_{run_id}.vtp")
         if os.path.exists(vtp):
@@ -66,48 +69,52 @@ def get_existing_run_ids(raw_dir):
     return sorted(existing)
 
 
-def download_run(run_id, raw_dir, tmp_dir):
-    """Download VTP + CSV for a single run into raw_dir/run_NNN/."""
+def download_run(run_id, raw_dir):
+    """Download VTP + CSV for a single run into raw_dir/run_NNN/.
+
+    Each thread gets its own temp dir to avoid HF cache contention.
+    """
     from huggingface_hub import hf_hub_download
 
-    run_dir = os.path.join(raw_dir, f"run_{run_id:03d}")
-    os.makedirs(run_dir, exist_ok=True)
+    tmp_dir = tempfile.mkdtemp(prefix=f"hf_run{run_id}_")
+    try:
+        run_dir = os.path.join(raw_dir, f"run_{run_id:03d}")
+        os.makedirs(run_dir, exist_ok=True)
 
-    # Download boundary VTP
-    vtp_dest = os.path.join(run_dir, f"boundary_{run_id}.vtp")
-    if os.path.exists(vtp_dest):
-        print("  SKIP VTP: already exists", flush=True)
-    else:
-        print(f"  Downloading run_{run_id}/boundary_{run_id}.vtp ...", flush=True)
-        vtp_path = hf_hub_download(
-            repo_id=HF_REPO,
-            filename=f"run_{run_id}/boundary_{run_id}.vtp",
-            repo_type=HF_REPO_TYPE,
-            cache_dir=tmp_dir,
-        )
-        shutil.copy2(vtp_path, vtp_dest)
-        size_mb = os.path.getsize(vtp_dest) / 1024**2
-        print(f"  Saved VTP ({size_mb:.1f} MB)", flush=True)
-
-    # Download per-run geo_parameters CSV
-    csv_dest = os.path.join(run_dir, f"geo_parameters_{run_id}.csv")
-    if os.path.exists(csv_dest):
-        print("  SKIP CSV: already exists", flush=True)
-    else:
-        try:
-            csv_path = hf_hub_download(
+        # Download boundary VTP
+        vtp_dest = os.path.join(run_dir, f"boundary_{run_id}.vtp")
+        if not os.path.exists(vtp_dest):
+            vtp_path = hf_hub_download(
                 repo_id=HF_REPO,
-                filename=f"run_{run_id}/geo_parameters_{run_id}.csv",
+                filename=f"run_{run_id}/boundary_{run_id}.vtp",
                 repo_type=HF_REPO_TYPE,
                 cache_dir=tmp_dir,
             )
-            shutil.copy2(csv_path, csv_dest)
-            print("  Saved geo_parameters CSV", flush=True)
-        except Exception as e:
-            print(f"  WARNING: no per-run CSV for run {run_id}: {e}", flush=True)
+            shutil.copy2(vtp_path, vtp_dest)
+
+        # Download per-run geo_parameters CSV
+        csv_dest = os.path.join(run_dir, f"geo_parameters_{run_id}.csv")
+        if not os.path.exists(csv_dest):
+            try:
+                csv_path = hf_hub_download(
+                    repo_id=HF_REPO,
+                    filename=f"run_{run_id}/geo_parameters_{run_id}.csv",
+                    repo_type=HF_REPO_TYPE,
+                    cache_dir=tmp_dir,
+                )
+                shutil.copy2(csv_path, csv_dest)
+            except Exception:
+                pass  # per-run CSV is optional
+
+        size_mb = os.path.getsize(vtp_dest) / 1024**2
+        return run_id, True, f"{size_mb:.1f} MB"
+    except Exception as e:
+        return run_id, False, str(e)
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
-def download_global_csv(raw_dir, tmp_dir):
+def download_global_csv(raw_dir):
     """Download geo_parameters_all.csv."""
     from huggingface_hub import hf_hub_download
 
@@ -117,17 +124,28 @@ def download_global_csv(raw_dir, tmp_dir):
         return
 
     print("Downloading geo_parameters_all.csv ...", flush=True)
-    csv_path = hf_hub_download(
-        repo_id=HF_REPO,
-        filename="geo_parameters_all.csv",
-        repo_type=HF_REPO_TYPE,
-        cache_dir=tmp_dir,
-    )
-    shutil.copy2(csv_path, dest)
-    print(f"Saved {dest}", flush=True)
+    tmp_dir = tempfile.mkdtemp(prefix="hf_global_")
+    try:
+        csv_path = hf_hub_download(
+            repo_id=HF_REPO,
+            filename="geo_parameters_all.csv",
+            repo_type=HF_REPO_TYPE,
+            cache_dir=tmp_dir,
+        )
+        shutil.copy2(csv_path, dest)
+        print(f"Saved {dest}", flush=True)
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+# Thread-safe counters for progress reporting
+_lock = threading.Lock()
+_completed = 0
 
 
 def main():
+    global _completed
+
     parser = argparse.ArgumentParser(
         description="Download raw DrivAerML files from HuggingFace"
     )
@@ -142,6 +160,12 @@ def main():
         nargs="+",
         default=None,
         help="Specific run IDs to download (default: all missing)",
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=8,
+        help="Number of concurrent download threads (default: 8)",
     )
     parser.add_argument(
         "--dry-run",
@@ -169,7 +193,8 @@ def main():
     else:
         to_download = sorted(available - existing)
 
-    print(f"\n  {len(to_download)} runs to download", flush=True)
+    total = len(to_download)
+    print(f"\n  {total} runs to download ({args.workers} workers)", flush=True)
 
     if args.dry_run:
         print(f"  Dry run — would download: {to_download}", flush=True)
@@ -179,41 +204,38 @@ def main():
         print("  Nothing to do — all runs already downloaded.", flush=True)
         return
 
-    # Use a temp dir for HF cache to avoid filling the volume with cache metadata
-    import tempfile
-
-    tmp_dir = tempfile.mkdtemp(prefix="hf_drivaer_")
-
-    # Download global CSV first
+    # Download global CSV first (serial)
     try:
-        download_global_csv(raw_dir, tmp_dir)
+        download_global_csv(raw_dir)
     except Exception as e:
         print(f"WARNING: Could not download global CSV: {e}", flush=True)
 
-    # Download each run
+    # Download runs concurrently
+    _completed = 0
     success = 0
     failed = []
-    for i, run_id in enumerate(to_download):
-        print(f"\n[{i + 1}/{len(to_download)}] Run {run_id}", flush=True)
-        try:
-            download_run(run_id, raw_dir, tmp_dir)
-            success += 1
-        except Exception as e:
-            print(f"  FAILED run {run_id}: {e}", flush=True)
-            failed.append(run_id)
 
-        # Periodically flush HF cache to save disk
-        if (i + 1) % 10 == 0:
-            shutil.rmtree(tmp_dir, ignore_errors=True)
-            os.makedirs(tmp_dir, exist_ok=True)
-
-    # Final cleanup
-    shutil.rmtree(tmp_dir, ignore_errors=True)
+    with ThreadPoolExecutor(max_workers=args.workers) as pool:
+        futures = {
+            pool.submit(download_run, run_id, raw_dir): run_id
+            for run_id in to_download
+        }
+        for future in as_completed(futures):
+            run_id, ok, msg = future.result()
+            with _lock:
+                _completed += 1
+                progress = _completed
+            if ok:
+                success += 1
+                print(f"  [{progress}/{total}] Run {run_id}: OK ({msg})", flush=True)
+            else:
+                failed.append(run_id)
+                print(f"  [{progress}/{total}] Run {run_id}: FAILED ({msg})", flush=True)
 
     print(f"\n{'=' * 60}", flush=True)
     print(f"Done. {success} downloaded, {len(failed)} failed.", flush=True)
     if failed:
-        print(f"Failed runs: {failed}", flush=True)
+        print(f"Failed runs: {sorted(failed)}", flush=True)
 
 
 if __name__ == "__main__":
