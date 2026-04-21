@@ -95,6 +95,7 @@ resources:
               spark.task.resource.gpu.amount: "${var.num_gpus}"
             spark_env_vars:
               PYTHONPATH: "${workspace.file_path}:${workspace.file_path}/Industrial-Scale-Benchmarks"
+              PYTHONUNBUFFERED: "1"
               NCCL_DEBUG: "WARN"
               NCCL_P2P_DISABLE: "1"
               NCCL_ASYNC_ERROR_HANDLING: "1"
