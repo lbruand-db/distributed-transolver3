@@ -360,10 +360,52 @@ def main():
     shard_msg = f"ON (each GPU loads 1/{world_size} of mesh)" if shard_mesh else "OFF (full mesh on each GPU)"
     log(f"Mesh sharding: {shard_msg}")
 
+    # --- Preload data to local SSD ---
+    # UC Volume FUSE reads have high latency variance (cold cache misses
+    # cause 3-4x slowdowns). Copy NPZ files to local NVMe once so all
+    # epochs read from fast local disk.
+    local_data_dir = args.data_dir
+    local_ssd = "/local_disk0/transolver_data"
+    if os.path.exists("/local_disk0") and not os.path.exists(local_ssd):
+        if is_main_process():
+            import shutil
+
+            log(f"Preloading data from {args.data_dir} to {local_ssd} ...")
+            os.makedirs(local_ssd, exist_ok=True)
+            # Copy split files
+            for split_file in ["train.txt", "test.txt", "val.txt"]:
+                src = os.path.join(args.data_dir, split_file)
+                if os.path.exists(src):
+                    shutil.copy2(src, os.path.join(local_ssd, split_file))
+            # Copy NPZ files referenced by splits
+            copied = 0
+            for split_file in ["train.txt", "test.txt"]:
+                src_path = os.path.join(args.data_dir, split_file)
+                if not os.path.exists(src_path):
+                    continue
+                with open(src_path) as f:
+                    sample_names = [line.strip() for line in f if line.strip()]
+                for name in sample_names:
+                    src = os.path.join(args.data_dir, name)
+                    dst = os.path.join(local_ssd, name)
+                    if os.path.exists(src) and not os.path.exists(dst):
+                        shutil.copy2(src, dst)
+                        copied += 1
+                        if copied % 50 == 0:
+                            log(f"  Copied {copied} files...")
+            log(f"  Preloaded {copied} NPZ files to local SSD")
+        if dist.is_initialized():
+            dist.barrier()
+        local_data_dir = local_ssd
+        log(f"Using local data dir: {local_data_dir}")
+    elif os.path.exists(local_ssd):
+        local_data_dir = local_ssd
+        log(f"Local SSD cache already exists: {local_data_dir}")
+
     # --- Datasets ---
     logall("Creating train dataset...")
     train_dataset = DrivAerMLDataset(
-        args.data_dir,
+        local_data_dir,
         split="train",
         field=args.field,
         subset_size=local_subset_size,
@@ -374,7 +416,7 @@ def main():
     logall(f"Train dataset: {len(train_dataset)} samples")
     # Test dataset: sharded if --shard-eval, otherwise full mesh on rank 0
     test_dataset = DrivAerMLDataset(
-        args.data_dir,
+        local_data_dir,
         split="test",
         field=args.field,
         subset_size=None,
