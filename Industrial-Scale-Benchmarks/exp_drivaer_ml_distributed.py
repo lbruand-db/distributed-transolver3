@@ -807,6 +807,11 @@ if __name__ == "__main__":
             _clean_argv.append(_a)
         _sys.argv = [_sys.argv[0]] + _clean_argv
 
+        print(f"[Driver] Launching TorchDistributor with {_num_gpus} GPUs", flush=True)
+        print(f"[Driver] Args: {_clean_argv}", flush=True)
+        print(f"[Driver] CUDA available: {torch.cuda.is_available()}, "
+              f"devices: {torch.cuda.device_count()}", flush=True)
         launch_distributed_training(main, _num_gpus, cli_args=_clean_argv)
+        print("[Driver] TorchDistributor finished", flush=True)
     else:
         main()

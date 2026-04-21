@@ -104,10 +104,14 @@ def launch_distributed_training(train_fn, num_gpus, cli_args=None, **kwargs):
     if is_on_databricks():
         from pyspark.ml.torch.distributor import TorchDistributor
 
+        print(f"[Distributor] Running on Databricks, script: {script}", flush=True)
+        print(f"[Distributor] num_gpus={num_gpus}, local_mode=True", flush=True)
+
         # Ensure Databricks auth env vars are set so torchrun child processes
         # can reach MLflow. The driver has these from the notebook context but
         # they may not propagate to children automatically.
         _propagate_databricks_auth_env()
+        print("[Distributor] Auth env propagated", flush=True)
 
         distributor = TorchDistributor(
             num_processes=num_gpus,
@@ -118,9 +122,13 @@ def launch_distributed_training(train_fn, num_gpus, cli_args=None, **kwargs):
         # This avoids cloudpickle serialization issues where child processes
         # cannot find transolver3 module.
         # Forward CLI args so child processes get --data_dir, --epochs, etc.
+        print("[Distributor] Launching torchrun... (child output follows)", flush=True)
         if cli_args:
-            return distributor.run(script, *cli_args)
-        return distributor.run(script)
+            result = distributor.run(script, *cli_args)
+        else:
+            result = distributor.run(script)
+        print("[Distributor] torchrun completed", flush=True)
+        return result
     else:
         cmd = [
             sys.executable,
