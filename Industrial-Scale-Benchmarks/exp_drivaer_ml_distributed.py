@@ -432,17 +432,19 @@ def main():
     log(f"Model parameters: {n_params:,}")
 
     # --- Target normalization (paper Appendix A.3) ---
-    # Fit z-score stats by streaming over training targets. Each rank computes
-    # stats on its own shard; for correctness with sharded meshes we all-reduce
-    # the running sums so every rank has identical mean/std.
+    # Fit z-score stats by streaming over a subset of training targets.
+    # With ~8.8M points per sample, 20 samples give ~176M data points —
+    # more than enough for stable mean/std estimates. Each rank computes
+    # stats on its own shard; all-reduce merges them afterwards.
     target_normalizer = TargetNormalizer(out_dim=out_dim).to(device)
     n_train = len(train_dataset)
-    log(f"Fitting target normalizer on {n_train} training samples...")
+    n_norm_samples = min(n_train, 20)
+    log(f"Fitting target normalizer on {n_norm_samples}/{n_train} training samples...")
 
     def _target_iter():
-        for i in range(n_train):
-            if (i + 1) % 50 == 0 or (i + 1) == n_train:
-                log(f"  Normalizer fitting: [{i + 1}/{n_train}]")
+        for i in range(n_norm_samples):
+            if (i + 1) % 5 == 0 or (i + 1) == n_norm_samples:
+                log(f"  Normalizer fitting: [{i + 1}/{n_norm_samples}]")
             sample = train_dataset[i]
             yield sample[t_key]
 
@@ -451,18 +453,18 @@ def main():
     if dist.is_initialized():
         # All-reduce to get global stats across all shards
         # Convert to sum/count representation for correct distributed averaging
-        n_local = torch.tensor([len(train_dataset)], dtype=torch.float64, device=device)
+        n_local = torch.tensor([n_norm_samples], dtype=torch.float64, device=device)
         dist.all_reduce(n_local, op=dist.ReduceOp.SUM)
 
-        mean_sum = (target_normalizer.mean.double() * len(train_dataset)).to(device)
+        mean_sum = (target_normalizer.mean.double() * n_norm_samples).to(device)
         dist.all_reduce(mean_sum, op=dist.ReduceOp.SUM)
         global_mean = mean_sum / n_local
 
         # For std, we need the global variance: Var = E[X^2] - E[X]^2
         # local std includes eps, but we recompute from scratch
         local_var = (target_normalizer.std.double() - target_normalizer.eps) ** 2
-        var_sum = (local_var * len(train_dataset)).to(device)
-        mean_sq_sum = (target_normalizer.mean.double() ** 2 * len(train_dataset)).to(device)
+        var_sum = (local_var * n_norm_samples).to(device)
+        mean_sq_sum = (target_normalizer.mean.double() ** 2 * n_norm_samples).to(device)
         dist.all_reduce(var_sum, op=dist.ReduceOp.SUM)
         dist.all_reduce(mean_sq_sum, op=dist.ReduceOp.SUM)
 
