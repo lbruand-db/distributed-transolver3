@@ -102,8 +102,17 @@ def parse_args():
     parser.add_argument(
         "--amp",
         action="store_true",
-        help="Enable mixed precision training (float16 on CUDA, bfloat16 on CPU). "
+        help="Enable mixed precision training. "
         "Paper Appendix A.4: 'Training was conducted in either float16 or bfloat16 precision.'",
+    )
+    parser.add_argument(
+        "--amp-dtype",
+        default="bfloat16",
+        choices=["float16", "bfloat16"],
+        dest="amp_dtype",
+        help="AMP dtype. bfloat16 (default) has float32 dynamic range, avoiding norm overflow "
+        "with large N. float16 is faster on older GPUs but overflows for N >= 65K. "
+        "A10G supports both; bfloat16 is recommended.",
     )
     parser.add_argument("--grad_clip", type=float, default=1.0)
     parser.add_argument(
@@ -181,7 +190,11 @@ def train_epoch(model, dataloader, optimizer, scheduler, sampler, args, device, 
     count = 0
     accum = args.accumulation_steps
     x_key, t_key = get_field_key(args.field)
-    amp_dtype = torch.bfloat16 if device.type == "cpu" else torch.float16
+    _amp_dtype_str = getattr(args, "amp_dtype", "bfloat16")
+    if _amp_dtype_str == "bfloat16" or device.type == "cpu":
+        amp_dtype = torch.bfloat16
+    else:
+        amp_dtype = torch.float16
 
     optimizer.zero_grad()
     for step, batch in enumerate(dataloader):
@@ -197,10 +210,15 @@ def train_epoch(model, dataloader, optimizer, scheduler, sampler, args, device, 
         if target_normalizer is not None:
             target_sub = target_normalizer.encode(target_sub)
 
-        # Scale loss by accumulation steps so gradients average correctly
+        # Forward in AMP; loss computed outside autocast in float32.
+        # float16 norm overflows when N >= 65K (sum(x²) > float16 max 65504).
+        # relative_l2_loss() always casts to float32 internally, but we also
+        # compute it outside autocast to be explicit.
         with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=scaler is not None):
             pred = model(x_sub, num_tiles=args.num_tiles)
-            loss = relative_l2_loss(pred, target_sub) / accum
+
+        # Loss in float32 — safe regardless of amp_dtype
+        loss = relative_l2_loss(pred, target_sub) / accum
 
         if scaler is not None:
             scaler.scale(loss).backward()
@@ -578,9 +596,12 @@ def main():
     scheduler = create_scheduler(optimizer, total_steps)
 
     # Mixed precision (paper Appendix A.4)
-    scaler = torch.amp.GradScaler() if args.amp else None
+    # GradScaler only needed for float16; bfloat16 has float32 dynamic range
+    # so it doesn't need loss scaling.
+    _amp_dtype_str = getattr(args, "amp_dtype", "bfloat16")
+    scaler = torch.amp.GradScaler() if (args.amp and _amp_dtype_str == "float16") else None
     if args.amp:
-        log("Mixed precision training enabled (AMP)")
+        log(f"Mixed precision training enabled (AMP dtype={_amp_dtype_str})")
 
     # Each rank gets a unique seed for different random subsets
     mesh_sampler = AmortizedMeshSampler(local_subset_size, seed=args.seed + rank)

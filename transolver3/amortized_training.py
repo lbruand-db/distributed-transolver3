@@ -64,6 +64,10 @@ def relative_l2_loss(pred, target):
 
     L2_rel = ||pred - target||_2 / ||target||_2
 
+    Always computed in float32 regardless of input dtype. float16 norms
+    overflow when N >= ~65K (float16 max is 65504; sum(x²) over 100K points
+    of order 1 exceeds this, producing Inf then NaN).
+
     Args:
         pred: (B, N, d_out) predictions
         target: (B, N, d_out) ground truth
@@ -71,6 +75,8 @@ def relative_l2_loss(pred, target):
     Returns:
         scalar loss averaged over the batch
     """
+    pred = pred.float()
+    target = target.float()
     diff_norm = torch.norm(pred - target, p=2, dim=(1, 2))
     target_norm = torch.norm(target, p=2, dim=(1, 2))
     return (diff_norm / (target_norm + 1e-8)).mean()
