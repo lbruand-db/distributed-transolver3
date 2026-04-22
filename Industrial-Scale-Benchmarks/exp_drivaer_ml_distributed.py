@@ -511,7 +511,19 @@ def main():
     else:
         eval_dataset = test_dataset
         log(f"Training eval: all {len(test_dataset)} test samples")
-    test_loader = DataLoader(eval_dataset, batch_size=1, shuffle=False)
+    # num_workers=2: prefetch next sample from SSD while GPU processes current one.
+    # Each worker opens its own mmap handle in __getitem__ so this is fork-safe.
+    # pin_memory: stages tensors in page-locked RAM for faster DMA to GPU.
+    # persistent_workers: keeps workers alive across eval calls (every 10 epochs)
+    #   to avoid repeated fork/import overhead.
+    test_loader = DataLoader(
+        eval_dataset,
+        batch_size=1,
+        shuffle=False,
+        num_workers=2,
+        pin_memory=(device.type == "cuda"),
+        persistent_workers=True,
+    )
 
     # --- Model ---
     logall("Loading first sample to infer dimensions...")
