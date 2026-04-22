@@ -243,12 +243,17 @@ def train_epoch(model, dataloader, optimizer, scheduler, sampler, args, device, 
             if scaler is not None:
                 scaler.unscale_(optimizer)
                 torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
+                scale_before = scaler.get_scale()
                 scaler.step(optimizer)
                 scaler.update()
+                if scaler.get_scale() < scale_before:
+                    print("[WARN] GradScaler skipped optimizer step (inf/nan grads), scale reduced", flush=True)
+                else:
+                    scheduler.step()
             else:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
                 optimizer.step()
-            scheduler.step()
+                scheduler.step()
             optimizer.zero_grad()
 
     return total_loss / max(count, 1)
