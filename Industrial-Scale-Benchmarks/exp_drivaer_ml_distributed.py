@@ -744,135 +744,143 @@ def main():
             mlflow_run = None
 
     # --- Training loop ---
-    log(f"Starting training loop: {args.epochs - start_epoch} epochs, "
-        f"{len(train_loader)} batches/epoch, eval every 10 epochs")
-    if start_epoch == 0:
-        best_error = float("inf")
-    evals_without_improvement = 0
-    for epoch in range(start_epoch, args.epochs):
-        train_sampler.set_epoch(epoch)  # shuffle differently each epoch
-        t0 = time.time()
-        train_loss = train_epoch(
-            model, train_loader, optimizer, scheduler, mesh_sampler, args, device,
-            scaler=scaler, target_normalizer=target_normalizer,
-        )
-        t1 = time.time()
+    # try/finally ensures mlflow.end_run() is always called, even on OOM /
+    # NaN / barrier crash — otherwise the run stays "RUNNING" in the UI forever.
+    try:
+        log(f"Starting training loop: {args.epochs - start_epoch} epochs, "
+            f"{len(train_loader)} batches/epoch, eval every 10 epochs")
+        if start_epoch == 0:
+            best_error = float("inf")
+        evals_without_improvement = 0
+        for epoch in range(start_epoch, args.epochs):
+            train_sampler.set_epoch(epoch)  # shuffle differently each epoch
+            t0 = time.time()
+            train_loss = train_epoch(
+                model, train_loader, optimizer, scheduler, mesh_sampler, args, device,
+                scaler=scaler, target_normalizer=target_normalizer,
+            )
+            t1 = time.time()
 
-        # Evaluate
-        did_eval = (epoch + 1) % 10 == 0 or epoch == args.epochs - 1
-        eval_results = None
-        test_error = None
-        if did_eval:
-            if args.shard_eval:
-                eval_results = evaluate(
-                    model, test_loader, args, device,
-                    sharded=True, target_normalizer=target_normalizer,
-                )
-            elif is_main_process():
-                eval_results = evaluate(
-                    model, test_loader, args, device,
-                    sharded=False, target_normalizer=target_normalizer,
-                )
+            # Evaluate
+            did_eval = (epoch + 1) % 10 == 0 or epoch == args.epochs - 1
+            eval_results = None
+            test_error = None
+            if did_eval:
+                if args.shard_eval:
+                    eval_results = evaluate(
+                        model, test_loader, args, device,
+                        sharded=True, target_normalizer=target_normalizer,
+                    )
+                elif is_main_process():
+                    eval_results = evaluate(
+                        model, test_loader, args, device,
+                        sharded=False, target_normalizer=target_normalizer,
+                    )
 
-            if is_main_process() and eval_results is not None:
-                test_error = eval_results["aggregate"]
-                per_q = " | ".join(
-                    f"{k}={v:.4f}" for k, v in eval_results.items()
-                    if k != "aggregate"
-                )
+                if is_main_process() and eval_results is not None:
+                    test_error = eval_results["aggregate"]
+                    per_q = " | ".join(
+                        f"{k}={v:.4f}" for k, v in eval_results.items()
+                        if k != "aggregate"
+                    )
+                    log(
+                        f"Epoch {epoch + 1}/{args.epochs} | "
+                        f"train_loss={train_loss:.6f} | "
+                        f"test_L2={test_error:.4f} ({test_error * 100:.2f}%)"
+                        + (f" | {per_q}" if per_q else "")
+                        + f" | time={t1 - t0:.1f}s"
+                    )
+                    if test_error < best_error:
+                        best_error = test_error
+                        evals_without_improvement = 0
+                        torch.save(model.module.state_dict(), os.path.join(args.save_dir, "best_model.pt"))
+                        torch.save(target_normalizer.state_dict(), os.path.join(args.save_dir, "target_normalizer.pt"))
+                    else:
+                        evals_without_improvement += 1
+
+                if dist.is_initialized():
+                    dist.barrier()
+
+                # Broadcast early stopping decision from rank 0 so all ranks break together
+                if args.patience > 0 and dist.is_initialized():
+                    should_stop = torch.tensor([1 if evals_without_improvement >= args.patience else 0], device=device)
+                    dist.broadcast(should_stop, src=0)
+                    if should_stop.item():
+                        log(f"Early stopping at epoch {epoch + 1}: no improvement for {args.patience} eval cycles")
+                        break
+                elif args.patience > 0 and evals_without_improvement >= args.patience:
+                    log(f"Early stopping at epoch {epoch + 1}: no improvement for {args.patience} eval cycles")
+                    break
+            else:
+                current_lr = optimizer.param_groups[0]["lr"]
+                avg_time = (t1 - t0)  # this epoch's time
+                remaining = (args.epochs - epoch - 1) * avg_time
+                eta_h, eta_m = divmod(int(remaining), 3600)
+                eta_m = eta_m // 60
                 log(
                     f"Epoch {epoch + 1}/{args.epochs} | "
                     f"train_loss={train_loss:.6f} | "
-                    f"test_L2={test_error:.4f} ({test_error * 100:.2f}%)"
-                    + (f" | {per_q}" if per_q else "")
-                    + f" | time={t1 - t0:.1f}s"
+                    f"lr={current_lr:.2e} | "
+                    f"time={t1 - t0:.1f}s | "
+                    f"ETA ~{eta_h}h{eta_m:02d}m"
                 )
-                if test_error < best_error:
-                    best_error = test_error
-                    evals_without_improvement = 0
-                    torch.save(model.module.state_dict(), os.path.join(args.save_dir, "best_model.pt"))
-                    torch.save(target_normalizer.state_dict(), os.path.join(args.save_dir, "target_normalizer.pt"))
-                else:
-                    evals_without_improvement += 1
 
-            if dist.is_initialized():
-                dist.barrier()
+            # Save full training checkpoint periodically (for resumption)
+            if (epoch + 1) % args.save_every == 0:
+                if is_main_process():
+                    ckpt_path = os.path.join(args.save_dir, "training_checkpoint.pt")
+                    ckpt_data = {
+                        "epoch": epoch,
+                        "model": model.module.state_dict(),
+                        "optimizer": optimizer.state_dict(),
+                        "scheduler": scheduler.state_dict(),
+                        "best_error": best_error,
+                        "target_normalizer": target_normalizer.state_dict(),
+                    }
+                    if scaler is not None:
+                        ckpt_data["scaler"] = scaler.state_dict()
+                    torch.save(ckpt_data, ckpt_path)
+                    log(f"Saved training checkpoint at epoch {epoch + 1} to {ckpt_path}")
+                if dist.is_initialized():
+                    dist.barrier()
 
-            # Broadcast early stopping decision from rank 0 so all ranks break together
-            if args.patience > 0 and dist.is_initialized():
-                should_stop = torch.tensor([1 if evals_without_improvement >= args.patience else 0], device=device)
-                dist.broadcast(should_stop, src=0)
-                if should_stop.item():
-                    log(f"Early stopping at epoch {epoch + 1}: no improvement for {args.patience} eval cycles")
-                    break
-            elif args.patience > 0 and evals_without_improvement >= args.patience:
-                log(f"Early stopping at epoch {epoch + 1}: no improvement for {args.patience} eval cycles")
-                break
-        else:
-            current_lr = optimizer.param_groups[0]["lr"]
-            avg_time = (t1 - t0)  # this epoch's time
-            remaining = (args.epochs - epoch - 1) * avg_time
-            eta_h, eta_m = divmod(int(remaining), 3600)
-            eta_m = eta_m // 60
-            log(
-                f"Epoch {epoch + 1}/{args.epochs} | "
-                f"train_loss={train_loss:.6f} | "
-                f"lr={current_lr:.2e} | "
-                f"time={t1 - t0:.1f}s | "
-                f"ETA ~{eta_h}h{eta_m:02d}m"
-            )
+            # Log metrics to MLflow (live, per-epoch)
+            if mlflow_run and is_main_process():
+                mlflow.log_metric("train_loss", train_loss, step=epoch)
+                mlflow.log_metric("epoch_time_s", t1 - t0, step=epoch)
+                if did_eval and eval_results is not None:
+                    mlflow.log_metric("test_l2", eval_results["aggregate"], step=epoch)
+                    for name, val in eval_results.items():
+                        if name != "aggregate":
+                            mlflow.log_metric(f"test_l2_{name}", val, step=epoch)
 
-        # Save full training checkpoint periodically (for resumption)
-        if (epoch + 1) % args.save_every == 0:
-            if is_main_process():
-                ckpt_path = os.path.join(args.save_dir, "training_checkpoint.pt")
-                ckpt_data = {
-                    "epoch": epoch,
-                    "model": model.module.state_dict(),
-                    "optimizer": optimizer.state_dict(),
-                    "scheduler": scheduler.state_dict(),
-                    "best_error": best_error,
-                    "target_normalizer": target_normalizer.state_dict(),
-                }
-                if scaler is not None:
-                    ckpt_data["scaler"] = scaler.state_dict()
-                torch.save(ckpt_data, ckpt_path)
-                log(f"Saved training checkpoint at epoch {epoch + 1} to {ckpt_path}")
-            if dist.is_initialized():
-                dist.barrier()
+        log(f"\nBest test relative L2 error: {best_error:.4f} ({best_error * 100:.2f}%)")
 
-        # Log metrics to MLflow (live, per-epoch)
+        # Log best model to MLflow and save run_id for downstream tasks
         if mlflow_run and is_main_process():
-            mlflow.log_metric("train_loss", train_loss, step=epoch)
-            mlflow.log_metric("epoch_time_s", t1 - t0, step=epoch)
-            if did_eval and eval_results is not None:
-                mlflow.log_metric("test_l2", eval_results["aggregate"], step=epoch)
-                for name, val in eval_results.items():
-                    if name != "aggregate":
-                        mlflow.log_metric(f"test_l2_{name}", val, step=epoch)
+            mlflow.log_metric("best_test_l2", best_error)
+            best_path = os.path.join(args.save_dir, "best_model.pt")
+            if os.path.exists(best_path):
+                from transolver3.distributed import unwrap_ddp_model
 
-    log(f"\nBest test relative L2 error: {best_error:.4f} ({best_error * 100:.2f}%)")
+                raw_model = unwrap_ddp_model(model)
+                raw_model.load_state_dict(torch.load(best_path, map_location=device))
+                sample_x = torch.randn(1, 100, space_dim, device=device)
+                log_model_with_signature(raw_model, sample_x)
 
-    # Log best model to MLflow and save run_id for downstream tasks
-    if mlflow_run and is_main_process():
-        mlflow.log_metric("best_test_l2", best_error)
-        best_path = os.path.join(args.save_dir, "best_model.pt")
-        if os.path.exists(best_path):
-            from transolver3.distributed import unwrap_ddp_model
+            # Write run_id so evaluate/register tasks can reference this run
+            run_id = mlflow_run.info.run_id
+            run_id_path = os.path.join(args.save_dir, "mlflow_run_id.txt")
+            with open(run_id_path, "w") as f:
+                f.write(run_id)
+            log(f"MLflow run_id saved to {run_id_path}: {run_id}")
 
-            raw_model = unwrap_ddp_model(model)
-            raw_model.load_state_dict(torch.load(best_path, map_location=device))
-            sample_x = torch.randn(1, 100, space_dim, device=device)
-            log_model_with_signature(raw_model, sample_x)
-
-        # Write run_id so evaluate/register tasks can reference this run
-        run_id = mlflow_run.info.run_id
-        run_id_path = os.path.join(args.save_dir, "mlflow_run_id.txt")
-        with open(run_id_path, "w") as f:
-            f.write(run_id)
-        log(f"MLflow run_id saved to {run_id_path}: {run_id}")
-
-        mlflow.end_run()
+            mlflow.end_run()
+            mlflow_run = None  # prevent finally from double-ending
+    finally:
+        # Ensure MLflow run is closed even on OOM / NaN / barrier crash
+        if mlflow_run and is_main_process():
+            mlflow.end_run(status="FAILED")
 
     cleanup()
 
