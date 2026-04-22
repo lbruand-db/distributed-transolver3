@@ -349,62 +349,34 @@ def evaluate(model, dataloader, args, device, sharded=False, target_normalizer=N
 
 
 def main():
+    import shutil
+    import time
+
     logall(f"main() entered (pid={os.getpid()})")
     args = parse_args()
-    logall("args parsed, calling setup_distributed()")
+    logall("args parsed")
 
-    # --- Reproducibility ---
-    torch.manual_seed(args.seed)
-    torch.cuda.manual_seed_all(args.seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
-
-    # --- Distributed setup ---
-    rank, world_size = setup_distributed()
-    device = get_device()
-    logall(f"distributed setup done: device={device}")
-    log(f"Distributed: {world_size} workers, device={device}")
-
-    # Warm-up barrier: forces NCCL communicator initialization NOW, before rank 0
-    # does any long-running single-rank work (e.g. SSD preload). Without this,
-    # NCCL initializes lazily on the FIRST collective after setup, which could be
-    # the preload barrier — by that point ranks 1-3 have been waiting for minutes
-    # and the TCP store get('0') times out.
-    if dist.is_initialized():
-        dist.barrier()
-    logall("NCCL warm-up barrier passed")
-
-    if is_main_process():
-        os.makedirs(args.save_dir, exist_ok=True)
-
-    # Mesh sharding: each GPU loads only 1/K of the mesh from disk.
-    # With --no-shard-mesh: every GPU loads the full mesh (classic DDP).
-    shard_mesh = not args.no_shard_mesh and world_size > 1
-
-    # Per-GPU subset size
-    local_subset_size = args.subset_size // world_size
-    log(f"Total subset: {args.subset_size:,}, per-GPU: {local_subset_size:,}")
-    shard_msg = f"ON (each GPU loads 1/{world_size} of mesh)" if shard_mesh else "OFF (full mesh on each GPU)"
-    log(f"Mesh sharding: {shard_msg}")
-
-    # --- Preload data to local SSD ---
-    # UC Volume FUSE reads have high latency variance (cold cache misses
-    # cause 3-4x slowdowns). Copy NPZ files to local NVMe once so all
-    # epochs read from fast local disk.
-    local_data_dir = args.data_dir
+    # --- Preload data to local SSD BEFORE distributed setup ---
+    # Must happen before dist.init_process_group() so no NCCL collective is
+    # open during the copy. NCCL's watchdog kills ranks after 600 s of waiting
+    # on any collective — preloading 400+ NPZ files takes 10-15 minutes.
+    #
+    # Coordination uses LOCAL_RANK (set by torchrun) + a sentinel file:
+    #   LOCAL_RANK 0  → copies files, writes sentinel when done
+    #   LOCAL_RANK 1+ → spin-wait on sentinel (no NCCL involved)
     local_ssd = "/local_disk0/transolver_data"
-    if os.path.exists("/local_disk0") and not os.path.exists(local_ssd):
-        if is_main_process():
-            import shutil
+    sentinel = os.path.join(local_ssd, ".preload_done")
+    local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+    local_data_dir = args.data_dir
 
-            log(f"Preloading data from {args.data_dir} to {local_ssd} ...")
+    if os.path.exists("/local_disk0") and not os.path.exists(sentinel):
+        if local_rank == 0:
+            logall(f"[local_rank 0] Preloading data from {args.data_dir} to {local_ssd} ...")
             os.makedirs(local_ssd, exist_ok=True)
-            # Copy split files
             for split_file in ["train.txt", "test.txt", "val.txt"]:
                 src = os.path.join(args.data_dir, split_file)
                 if os.path.exists(src):
                     shutil.copy2(src, os.path.join(local_ssd, split_file))
-            # Copy NPZ files referenced by splits
             copied = 0
             for split_file in ["train.txt", "test.txt"]:
                 src_path = os.path.join(args.data_dir, split_file)
@@ -419,15 +391,45 @@ def main():
                         shutil.copy2(src, dst)
                         copied += 1
                         if copied % 50 == 0:
-                            log(f"  Copied {copied} files...")
-            log(f"  Preloaded {copied} NPZ files to local SSD")
-        if dist.is_initialized():
-            dist.barrier()
+                            logall(f"[local_rank 0]   Copied {copied} files...")
+            logall(f"[local_rank 0] Preloaded {copied} NPZ files; writing sentinel")
+            # Sentinel written last — guarantees all files visible to other ranks
+            with open(sentinel, "w") as f:
+                f.write("done\n")
+        else:
+            logall(f"[local_rank {local_rank}] Waiting for preload sentinel...")
+            while not os.path.exists(sentinel):
+                time.sleep(5)
+            logall(f"[local_rank {local_rank}] Sentinel found, proceeding")
+
+    if os.path.exists(sentinel):
         local_data_dir = local_ssd
-        log(f"Using local data dir: {local_data_dir}")
-    elif os.path.exists(local_ssd):
-        local_data_dir = local_ssd
-        log(f"Local SSD cache already exists: {local_data_dir}")
+        logall(f"Using local SSD data dir: {local_data_dir}")
+
+    # --- Reproducibility ---
+    torch.manual_seed(args.seed)
+    torch.cuda.manual_seed_all(args.seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+    # --- Distributed setup ---
+    rank, world_size = setup_distributed()
+    device = get_device()
+    logall(f"distributed setup done: device={device}")
+    log(f"Distributed: {world_size} workers, device={device}")
+
+    if is_main_process():
+        os.makedirs(args.save_dir, exist_ok=True)
+
+    # Mesh sharding: each GPU loads only 1/K of the mesh from disk.
+    # With --no-shard-mesh: every GPU loads the full mesh (classic DDP).
+    shard_mesh = not args.no_shard_mesh and world_size > 1
+
+    # Per-GPU subset size
+    local_subset_size = args.subset_size // world_size
+    log(f"Total subset: {args.subset_size:,}, per-GPU: {local_subset_size:,}")
+    shard_msg = f"ON (each GPU loads 1/{world_size} of mesh)" if shard_mesh else "OFF (full mesh on each GPU)"
+    log(f"Mesh sharding: {shard_msg}")
 
     # --- Datasets ---
     logall("Creating train dataset...")
