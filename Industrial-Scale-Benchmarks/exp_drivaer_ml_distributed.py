@@ -34,7 +34,7 @@ import time
 import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 from torch.utils.data.distributed import DistributedSampler
 
 _this_dir = os.path.dirname(os.path.abspath(__file__)) if "__file__" in dir() else os.getcwd()
@@ -123,6 +123,16 @@ def parse_args():
     )
     parser.add_argument("--cache_chunk_size", type=int, default=100000)
     parser.add_argument("--decode_chunk_size", type=int, default=50000)
+    parser.add_argument(
+        "--num-eval-samples",
+        type=int,
+        default=5,
+        dest="num_eval_samples",
+        help="Number of test samples evaluated during training (every --eval-every epochs). "
+        "Evaluating all 50 DrivAerML test samples takes ~65 min per eval cycle (8.8M pts each). "
+        "Use a small value (default 5) for fast early-stopping signals during training. "
+        "The dedicated evaluate task always runs on the full test set. 0 = all samples.",
+    )
     parser.add_argument("--eval_only", action="store_true")
     parser.add_argument("--checkpoint", type=str, default=None)
     parser.add_argument(
@@ -350,7 +360,6 @@ def evaluate(model, dataloader, args, device, sharded=False, target_normalizer=N
 
 def main():
     import shutil
-    import time
 
     logall(f"main() entered (pid={os.getpid()})")
     args = parse_args()
@@ -467,7 +476,19 @@ def main():
         batch_size=args.batch_size,
         sampler=train_sampler,
     )
-    test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False)
+    # For periodic training eval, limit to a small subset for speed.
+    # Evaluating all 50 DrivAerML samples (8.8M pts each) takes ~65 min per
+    # eval cycle — dominated by 50×22 cache-build forward passes (100K chunks).
+    # Using 5 samples brings this to ~6 min. 0 or eval_only = full set.
+    if not args.eval_only and args.num_eval_samples > 0:
+        n_eval = min(args.num_eval_samples, len(test_dataset))
+        eval_indices = list(range(n_eval))
+        eval_dataset = Subset(test_dataset, eval_indices)
+        log(f"Training eval: {n_eval}/{len(test_dataset)} test samples (--num-eval-samples)")
+    else:
+        eval_dataset = test_dataset
+        log(f"Training eval: all {len(test_dataset)} test samples")
+    test_loader = DataLoader(eval_dataset, batch_size=1, shuffle=False)
 
     # --- Model ---
     logall("Loading first sample to infer dimensions...")
