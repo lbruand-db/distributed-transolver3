@@ -64,8 +64,8 @@ def _propagate_databricks_auth_env():
             os.environ["DATABRICKS_HOST"] = creds.host
             os.environ["DATABRICKS_TOKEN"] = creds.token
             return
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[auth] MLflow credential provider unavailable ({e!r}), trying SDK", flush=True)
 
     # Fallback: Databricks SDK
     try:
@@ -77,8 +77,9 @@ def _propagate_databricks_auth_env():
             os.environ["DATABRICKS_HOST"] = config.host
             os.environ["DATABRICKS_TOKEN"] = config.token
             return
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[auth] Databricks SDK credential provider unavailable ({e!r}); "
+              "child processes will attempt their own auth", flush=True)
 
 
 def launch_distributed_training(train_fn, num_gpus, cli_args=None, **kwargs):
