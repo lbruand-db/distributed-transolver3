@@ -189,7 +189,8 @@ def train_step(
         if normalizer is not None:
             t = normalizer.encode(t)
 
-        loss = relative_l2_loss(pred.float(), t.float())
+    # Loss in float32 — outside autocast so norms can't overflow in float16
+    loss = relative_l2_loss(pred.float(), t.float())
 
     if scaler is not None:
         scaler.scale(loss).backward()
