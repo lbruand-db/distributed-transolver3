@@ -423,8 +423,9 @@ def main():
     # --- Reproducibility ---
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed_all(args.seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
+    # Do NOT set cudnn.deterministic=True — it costs 10-20% throughput and
+    # provides no benefit here because DDP all-reduce is already non-deterministic.
+    torch.backends.cudnn.benchmark = False  # keeps algorithm choice stable across runs
 
     # --- Distributed setup ---
     rank, world_size = setup_distributed()
