@@ -286,14 +286,17 @@ def deploy_serving_endpoint(model_name, endpoint_name, catalog="ml", schema="tra
 
     config = EndpointCoreConfigInput(served_entities=[served_entity])
 
-    # Try to create; if exists, update
+    # Try to create; if it already exists, update instead.
+    # The create exception is logged so failures (e.g. permission errors) are
+    # distinguishable from normal "endpoint already exists" 409s.
     try:
         result = client.serving_endpoints.create(
             name=endpoint_name,
             config=config,
         )
         print(f"Created serving endpoint: {endpoint_name}")
-    except Exception:
+    except Exception as create_exc:
+        print(f"Create failed ({create_exc!r}), attempting update instead")
         result = client.serving_endpoints.update_config(
             name=endpoint_name,
             served_entities=[served_entity],
