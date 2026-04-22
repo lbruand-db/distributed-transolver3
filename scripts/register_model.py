@@ -260,7 +260,8 @@ def register_from_checkpoint(checkpoint, catalog, schema, model_name):
     model.load_state_dict(state_dict)
 
     print(f"Registering as {catalog}.{schema}.{model_name}...")
-    mlflow.set_experiment("/Shared/transolver3-experiments")
+    _experiment = os.environ.get("MLFLOW_EXPERIMENT_NAME", "/Shared/transolver3-experiments")
+    mlflow.set_experiment(_experiment)
     with mlflow.start_run(run_name="register-model"):
         info = register_serving_model(
             model,
@@ -286,9 +287,15 @@ def main():
         "If set, promotes the already-logged model (no re-logging).",
     )
     parser.add_argument("--checkpoint", default=None, help="Fallback: path to checkpoint file if no MLflow run_id.")
+    parser.add_argument(
+        "--mlflow_experiment",
+        type=str,
+        default=os.environ.get("MLFLOW_EXPERIMENT_NAME", "/Shared/transolver3-experiments"),
+        help="MLflow experiment name/path (default: MLFLOW_EXPERIMENT_NAME env var).",
+    )
     args = parser.parse_args()
 
-    mlflow.set_experiment("/Shared/transolver3-experiments")
+    mlflow.set_experiment(args.mlflow_experiment)
 
     if args.mlflow_run_id_file and os.path.exists(args.mlflow_run_id_file):
         with open(args.mlflow_run_id_file) as f:

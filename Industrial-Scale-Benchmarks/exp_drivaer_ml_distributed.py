@@ -187,6 +187,13 @@ def parse_args():
     parser.add_argument(
         "--num-gpus", type=int, default=8, dest="num_gpus", help="Number of GPUs (only used with --use-distributor)"
     )
+    parser.add_argument(
+        "--mlflow_experiment",
+        type=str,
+        default=os.environ.get("MLFLOW_EXPERIMENT_NAME", "/Shared/transolver3-experiments"),
+        help="MLflow experiment name/path. Defaults to MLFLOW_EXPERIMENT_NAME env var "
+        "or '/Shared/transolver3-experiments'.",
+    )
     return parser.parse_args()
 
 
@@ -678,7 +685,7 @@ def main():
     mlflow_run = None
     if _HAS_MLFLOW and is_main_process():
         try:
-            mlflow.set_experiment("/Shared/transolver3-experiments")
+            mlflow.set_experiment(args.mlflow_experiment)
             mlflow_run = mlflow.start_run(run_name=f"drivaer-{args.field}-{args.n_layers}L")
             log_training_run(
                 model,
