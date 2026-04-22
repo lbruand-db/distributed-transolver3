@@ -193,3 +193,57 @@ def test_tile_size_attention():
 
     diff = (out_tile_size - out_num_tiles).abs().max().item()
     assert diff < 1e-6, f"tile_size vs num_tiles max diff: {diff}"
+
+
+def test_n1_mesh_no_nan():
+    """N=1 mesh (single point): output must be finite with no NaN/inf.
+
+    With N=1, softmax over M slices assigns all mass to the single point's
+    distribution. d_accum = w[0] in [0,1]^M — the 1e-5 guard must hold.
+    """
+    B, N, C = 1, 1, 64
+    heads = 4
+    slice_num = 16
+    attn = PhysicsAttentionV3(C, heads=heads, dim_head=C // heads, slice_num=slice_num)
+    attn.eval()
+
+    x = torch.randn(B, N, C)
+    with torch.no_grad():
+        # Standard path
+        out = attn(x, num_tiles=0)
+        assert torch.isfinite(out).all(), "N=1 standard: non-finite output"
+
+        # Tiled path (num_tiles=1)
+        out_tiled = attn(x, num_tiles=1)
+        assert torch.isfinite(out_tiled).all(), "N=1 tiled: non-finite output"
+
+        # Cached path
+        s_raw, d = attn.compute_physical_state(x)
+        assert torch.isfinite(s_raw).all(), "N=1: non-finite s_raw in cache"
+        assert torch.isfinite(d).all(), "N=1: non-finite d in cache"
+        s_out = attn.compute_cached_state(s_raw, d)
+        out_cached = attn.decode_from_cache(x, s_out)
+        assert torch.isfinite(out_cached).all(), "N=1 cached: non-finite output"
+
+
+def test_n_equals_slice_num_no_nan():
+    """N == slice_num: exactly one point per slice bucket on average.
+
+    This is a boundary case where d_accum values can be very small (a slice
+    receives near-zero weight from all points). The 1e-5 guard must prevent
+    NaN in s_raw / (d + 1e-5).
+    """
+    B, C = 1, 64
+    heads = 4
+    slice_num = 16
+    N = slice_num  # exactly 16 points for 16 slices
+    attn = PhysicsAttentionV3(C, heads=heads, dim_head=C // heads, slice_num=slice_num)
+    attn.eval()
+
+    x = torch.randn(B, N, C)
+    with torch.no_grad():
+        out = attn(x, num_tiles=0)
+        assert torch.isfinite(out).all(), "N==slice_num: non-finite output"
+
+        out_tiled = attn(x, num_tiles=2)
+        assert torch.isfinite(out_tiled).all(), "N==slice_num tiled: non-finite output"
