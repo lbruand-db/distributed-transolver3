@@ -413,9 +413,13 @@ def main():
                         if copied % 50 == 0:
                             logall(f"[local_rank 0]   Copied {copied} files...")
             logall(f"[local_rank 0] Preloaded {copied} NPZ files; writing sentinel")
-            # Sentinel written last — guarantees all files visible to other ranks
+            # Sentinel written last — guarantees all files visible to other ranks.
+            # fsync flushes to the kernel page cache so polling ranks see it immediately
+            # regardless of filesystem write-behind buffering.
             with open(sentinel, "w") as f:
                 f.write("done\n")
+                f.flush()
+                os.fsync(f.fileno())
         else:
             logall(f"[local_rank {local_rank}] Waiting for preload sentinel...")
             while not os.path.exists(sentinel):
