@@ -365,6 +365,15 @@ def main():
     logall(f"distributed setup done: device={device}")
     log(f"Distributed: {world_size} workers, device={device}")
 
+    # Warm-up barrier: forces NCCL communicator initialization NOW, before rank 0
+    # does any long-running single-rank work (e.g. SSD preload). Without this,
+    # NCCL initializes lazily on the FIRST collective after setup, which could be
+    # the preload barrier — by that point ranks 1-3 have been waiting for minutes
+    # and the TCP store get('0') times out.
+    if dist.is_initialized():
+        dist.barrier()
+    logall("NCCL warm-up barrier passed")
+
     if is_main_process():
         os.makedirs(args.save_dir, exist_ok=True)
 
