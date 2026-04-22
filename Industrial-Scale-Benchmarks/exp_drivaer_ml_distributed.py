@@ -259,6 +259,17 @@ def train_epoch(model, dataloader, optimizer, scheduler, sampler, args, device, 
     return total_loss / max(count, 1)
 
 
+def _all_reduce_mean(value: float, device) -> float:
+    """All-reduce a scalar mean across ranks (SUM / world_size).
+
+    Using a single helper prevents forgetting the divide — a bug that would
+    silently multiply metrics by world_size with no error.
+    """
+    t = torch.tensor([value], device=device)
+    dist.all_reduce(t, op=dist.ReduceOp.SUM)
+    return t.item() / dist.get_world_size()
+
+
 # Per-quantity channel splits for Table 4 reproduction.
 # surface_target = cat([pressure(1), wall_shear(3)], dim=-1) -> 4 channels
 # volume_target  = cat([velocity(3), pressure(1)], dim=-1)   -> 4 channels
@@ -350,14 +361,9 @@ def evaluate(model, dataloader, args, device, sharded=False, target_normalizer=N
 
     if sharded and dist.is_initialized():
         # Average errors across ranks for consistent reporting
-        error_tensor = torch.tensor([mean_error], device=device)
-        dist.all_reduce(error_tensor, op=dist.ReduceOp.SUM)
-        mean_error = error_tensor.item() / dist.get_world_size()
-
+        mean_error = _all_reduce_mean(mean_error, device)
         for name in results:
-            t = torch.tensor([results[name]], device=device)
-            dist.all_reduce(t, op=dist.ReduceOp.SUM)
-            results[name] = t.item() / dist.get_world_size()
+            results[name] = _all_reduce_mean(results[name], device)
 
     results["aggregate"] = mean_error
     return results
