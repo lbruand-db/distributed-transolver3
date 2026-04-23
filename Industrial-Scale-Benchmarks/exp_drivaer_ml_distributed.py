@@ -34,8 +34,7 @@ import time
 import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.utils.data import DataLoader, Subset
-from torch.utils.data.distributed import DistributedSampler
+from torch.utils.data import DataLoader, Subset, Sampler
 
 _this_dir = os.path.dirname(os.path.abspath(__file__)) if "__file__" in dir() else os.getcwd()
 sys.path.insert(0, os.path.join(_this_dir, ".."))
@@ -69,6 +68,39 @@ try:
     _HAS_MLFLOW = True
 except ImportError:
     _HAS_MLFLOW = False
+
+
+class SyncedSampler(Sampler):
+    """Shuffle with the same seed on every rank.
+
+    In mesh-sharded DDP, all ranks must process the **same sample** at each
+    optimizer step so that their spatial-shard gradients combine coherently
+    via all-reduce into a full-mesh gradient.  DistributedSampler partitions
+    the sample index across ranks (100 samples/GPU/epoch on 4 GPUs) which
+    cuts optimizer steps from 400→100 and makes each step average gradients
+    from 4 *different* geometries — diverging from the paper's batch_size=1.
+
+    SyncedSampler gives every rank the same shuffled order, so:
+      - 400 optimizer steps/epoch (matches paper's single-GPU 400 steps)
+      - Each step: 4 ranks process 4 spatial shards of the *same* sample,
+        all-reduced → full-mesh gradient at batch_size=1
+    """
+
+    def __init__(self, dataset, seed: int = 42):
+        self.n = len(dataset)
+        self.seed = seed
+        self.epoch = 0
+
+    def set_epoch(self, epoch: int):
+        self.epoch = epoch
+
+    def __iter__(self):
+        g = torch.Generator()
+        g.manual_seed(self.seed + self.epoch)
+        return iter(torch.randperm(self.n, generator=g).tolist())
+
+    def __len__(self):
+        return self.n
 
 
 def parse_args():
@@ -486,14 +518,11 @@ def main():
     )
     logall(f"Test dataset: {len(test_dataset)} samples")
 
-    # DistributedSampler ensures each rank sees different samples when
-    # there are multiple samples in the dataset
-    train_sampler = DistributedSampler(
-        train_dataset,
-        num_replicas=world_size,
-        rank=rank,
-        shuffle=True,
-    )
+    # SyncedSampler: all ranks see the same shuffled order each epoch so
+    # that each optimizer step combines spatial-shard gradients from the
+    # *same* sample across GPUs — giving 400 steps/epoch (not 100) and
+    # true batch_size=1 matching the paper (see SyncedSampler docstring).
+    train_sampler = SyncedSampler(train_dataset, seed=args.seed)
     train_loader = DataLoader(
         train_dataset,
         batch_size=args.batch_size,
