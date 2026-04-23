@@ -50,6 +50,7 @@ resources:
             data_security_mode: "SINGLE_USER"
             aws_attributes:
               availability: "ON_DEMAND"
+              zone_id: "auto"
             spark_conf:
               spark.databricks.cluster.profile: "singleNode"
               spark.master: "local[*]"
@@ -91,6 +92,7 @@ resources:
             data_security_mode: "SINGLE_USER"
             aws_attributes:
               availability: "ON_DEMAND"
+              zone_id: "auto"
             spark_conf:
               spark.databricks.cluster.profile: "singleNode"
               spark.master: "local[*]"
@@ -127,11 +129,14 @@ resources:
               - "${var.data_volume_path}/checkpoints/mlflow_run_id.txt"
           new_cluster:
             spark_version: "15.4.x-gpu-ml-scala2.12"
-            node_type_id: ${var.node_type_id}
+            # Single GPU is sufficient: --eval_only uses CachedInference (no distributor),
+            # processing the mesh in 100K-point chunks. g5.xlarge (1x A10G 24 GB) fits easily.
+            node_type_id: "g5.xlarge"
             num_workers: 0
             data_security_mode: "SINGLE_USER"
             aws_attributes:
               availability: "ON_DEMAND"
+              zone_id: "auto"
             spark_conf:
               spark.databricks.cluster.profile: "singleNode"
               spark.master: "local[*]"
@@ -169,6 +174,7 @@ resources:
             data_security_mode: "SINGLE_USER"
             aws_attributes:
               availability: "ON_DEMAND"
+              zone_id: "auto"
             spark_conf:
               spark.databricks.cluster.profile: "singleNode"
               spark.master: "local[*]"
@@ -200,6 +206,7 @@ resources:
             data_security_mode: "SINGLE_USER"
             aws_attributes:
               availability: "ON_DEMAND"
+              zone_id: "auto"
             spark_conf:
               spark.databricks.cluster.profile: "singleNode"
               spark.master: "local[*]"
