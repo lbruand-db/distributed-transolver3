@@ -505,9 +505,16 @@ def main():
     # Using 5 samples brings this to ~6 min. 0 or eval_only = full set.
     if not args.eval_only and args.num_eval_samples > 0:
         n_eval = min(args.num_eval_samples, len(test_dataset))
-        eval_indices = list(range(n_eval))
+        # Use seeded random selection rather than always the first N samples.
+        # list(range(n_eval)) biases eval toward whatever geometries happen to
+        # be first in test.txt; a fixed random draw is more representative of
+        # the full test distribution while still being deterministic across runs.
+        import numpy as np
+        _rng = np.random.default_rng(seed=42)
+        eval_indices = sorted(_rng.choice(len(test_dataset), size=n_eval, replace=False).tolist())
         eval_dataset = Subset(test_dataset, eval_indices)
-        log(f"Training eval: {n_eval}/{len(test_dataset)} test samples (--num-eval-samples)")
+        log(f"Training eval: {n_eval}/{len(test_dataset)} test samples "
+            f"(indices {eval_indices}, seed=42)")
     else:
         eval_dataset = test_dataset
         log(f"Training eval: all {len(test_dataset)} test samples")
