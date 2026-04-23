@@ -30,33 +30,25 @@ Or on Databricks:
 import sys
 import os
 import argparse
+import shutil
 import time
+
+import numpy as np
 import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.utils.data import DataLoader, Subset, Sampler
+from torch.utils.data import DataLoader, Subset
 
 _this_dir = os.path.dirname(os.path.abspath(__file__)) if "__file__" in dir() else os.getcwd()
 sys.path.insert(0, os.path.join(_this_dir, ".."))
 
 from transolver3.model import Transolver3
-from transolver3.amortized_training import (
-    AmortizedMeshSampler,
-    relative_l2_loss,
-    create_optimizer,
-    create_scheduler,
-)
-from transolver3.inference import CachedInference, DistributedCachedInference
-from transolver3.distributed import (
-    setup_distributed,
-    cleanup,
-    is_main_process,
-    get_device,
-    log,
-    logall,
-)
+from transolver3.amortized_training import AmortizedMeshSampler, create_optimizer, create_scheduler
+from transolver3.distributed import setup_distributed, cleanup, is_main_process, get_device, log, logall
 from transolver3.normalizer import TargetNormalizer
+from transolver3.samplers import SyncedSampler
 from dataset.drivaer_ml import DrivAerMLDataset
+from train_eval import get_field_key, train_epoch, evaluate
 
 # Optional MLflow integration (guarded import)
 try:
@@ -70,38 +62,9 @@ except ImportError:
     _HAS_MLFLOW = False
 
 
-class SyncedSampler(Sampler):
-    """Shuffle with the same seed on every rank.
-
-    In mesh-sharded DDP, all ranks must process the **same sample** at each
-    optimizer step so that their spatial-shard gradients combine coherently
-    via all-reduce into a full-mesh gradient.  DistributedSampler partitions
-    the sample index across ranks (100 samples/GPU/epoch on 4 GPUs) which
-    cuts optimizer steps from 400→100 and makes each step average gradients
-    from 4 *different* geometries — diverging from the paper's batch_size=1.
-
-    SyncedSampler gives every rank the same shuffled order, so:
-      - 400 optimizer steps/epoch (matches paper's single-GPU 400 steps)
-      - Each step: 4 ranks process 4 spatial shards of the *same* sample,
-        all-reduced → full-mesh gradient at batch_size=1
-    """
-
-    def __init__(self, dataset, seed: int = 42):
-        self.n = len(dataset)
-        self.seed = seed
-        self.epoch = 0
-
-    def set_epoch(self, epoch: int):
-        self.epoch = epoch
-
-    def __iter__(self):
-        g = torch.Generator()
-        g.manual_seed(self.seed + self.epoch)
-        return iter(torch.randperm(self.n, generator=g).tolist())
-
-    def __len__(self):
-        return self.n
-
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Distributed Transolver-3 on DrivAerML")
@@ -160,7 +123,7 @@ def parse_args():
         type=int,
         default=5,
         dest="num_eval_samples",
-        help="Number of test samples evaluated during training (every --eval-every epochs). "
+        help="Number of test samples evaluated during training (every 10 epochs). "
         "Evaluating all 50 DrivAerML test samples takes ~65 min per eval cycle (8.8M pts each). "
         "Use a small value (default 5) for fast early-stopping signals during training. "
         "The dedicated evaluate task always runs on the full test set. 0 = all samples.",
@@ -217,7 +180,8 @@ def parse_args():
         help="Launch via TorchDistributor on Databricks instead of torchrun.",
     )
     parser.add_argument(
-        "--num-gpus", type=int, default=8, dest="num_gpus", help="Number of GPUs (only used with --use-distributor)"
+        "--num-gpus", type=int, default=8, dest="num_gpus",
+        help="Number of GPUs (only used with --use-distributor)",
     )
     parser.add_argument(
         "--mlflow_experiment",
@@ -229,204 +193,24 @@ def parse_args():
     return parser.parse_args()
 
 
-def get_field_key(field):
-    return f"{field}_x", f"{field}_target"
+# ---------------------------------------------------------------------------
+# Setup helpers (called once at startup)
+# ---------------------------------------------------------------------------
 
+def _preload_to_ssd(args: argparse.Namespace) -> str:
+    """Copy NPZ data from FUSE volume to local NVMe SSD; return local data dir.
 
-def train_epoch(model, dataloader, optimizer, scheduler, sampler, args, device, scaler=None, target_normalizer=None):
-    model.train()
-    total_loss = 0.0
-    count = 0
-    accum = args.accumulation_steps
-    x_key, t_key = get_field_key(args.field)
-    _amp_dtype_str = getattr(args, "amp_dtype", "bfloat16")
-    if _amp_dtype_str == "bfloat16" or device.type == "cpu":
-        amp_dtype = torch.bfloat16
-    else:
-        amp_dtype = torch.float16
-
-    optimizer.zero_grad()
-    for step, batch in enumerate(dataloader):
-        x = batch[x_key].to(device)
-        target = batch[t_key].to(device)
-
-        N = x.shape[1]
-        indices = sampler.sample(N).to(device)
-        x_sub = x[:, indices]
-        target_sub = target[:, indices]
-
-        # Normalize targets so model learns in z-score space (paper Appendix A.3)
-        if target_normalizer is not None:
-            target_sub = target_normalizer.encode(target_sub)
-
-        # Forward in AMP; loss computed outside autocast in float32.
-        # float16 norm overflows when N >= 65K (sum(x²) > float16 max 65504).
-        # relative_l2_loss() always casts to float32 internally, but we also
-        # compute it outside autocast to be explicit.
-        with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=scaler is not None):
-            pred = model(x_sub, num_tiles=args.num_tiles)
-
-        # Loss in float32 — safe regardless of amp_dtype
-        loss = relative_l2_loss(pred, target_sub) / accum
-
-        if scaler is not None:
-            scaler.scale(loss).backward()
-        else:
-            loss.backward()
-        # DDP handles gradient all-reduce automatically on backward()
-
-        total_loss += loss.item() * accum  # unscale for logging
-        count += 1
-
-        if (step + 1) % accum == 0 or (step + 1) == len(dataloader):
-            if scaler is not None:
-                scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
-                scale_before = scaler.get_scale()
-                scaler.step(optimizer)
-                scaler.update()
-                if scaler.get_scale() < scale_before:
-                    print("[WARN] GradScaler skipped optimizer step (inf/nan grads), scale reduced", flush=True)
-                else:
-                    scheduler.step()
-            else:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
-                optimizer.step()
-                scheduler.step()
-            optimizer.zero_grad()
-
-    return total_loss / max(count, 1)
-
-
-def _all_reduce_mean(value: float, device) -> float:
-    """All-reduce a scalar mean across ranks (SUM / world_size).
-
-    Using a single helper prevents forgetting the divide — a bug that would
-    silently multiply metrics by world_size with no error.
-    """
-    t = torch.tensor([value], device=device)
-    dist.all_reduce(t, op=dist.ReduceOp.SUM)
-    return t.item() / dist.get_world_size()
-
-
-# Per-quantity channel splits for Table 4 reproduction.
-# surface_target = cat([pressure(1), wall_shear(3)], dim=-1) -> 4 channels
-# volume_target  = cat([velocity(3), pressure(1)], dim=-1)   -> 4 channels
-_QUANTITY_SPLITS = {
-    "surface": [("p_s", 0, 1), ("tau", 1, 4)],
-    "volume": [("u", 0, 3), ("p_v", 3, 4)],
-}
-
-
-@torch.no_grad()
-def evaluate(model, dataloader, args, device, sharded=False, target_normalizer=None):
-    """Evaluate using cached inference.
-
-    Args:
-        model: DDP-wrapped or raw model
-        dataloader: test DataLoader (sharded or full depending on mode)
-        args: parsed arguments
-        device: torch device
-        sharded: if True, use DistributedCachedInference where each rank
-                 processes its mesh shard and all-reduces the tiny cache
-                 accumulators. If False, rank 0 evaluates on full data.
-        target_normalizer: if provided, decode predictions back to original
-                 scale before computing L2 error against raw targets.
+    Must run BEFORE dist.init_process_group() — NCCL's watchdog kills ranks
+    after 600 s waiting on a collective, and copying 400+ NPZ files takes
+    10-15 minutes. Coordination uses LOCAL_RANK + a sentinel file so no
+    NCCL collective is open during the copy.
 
     Returns:
-        dict with keys: "aggregate" (overall L2), plus per-quantity keys
-        (e.g. "p_s", "tau" for surface; "u", "p_v" for volume).
+        Path to local data directory (SSD if available, else args.data_dir).
     """
-    from transolver3.distributed import unwrap_ddp_model
-
-    raw_model = unwrap_ddp_model(model)
-    raw_model.eval()
-    all_errors = []
-    # Per-quantity error accumulators
-    quantity_splits = _QUANTITY_SPLITS.get(args.field, [])
-    per_quantity_errors = {name: [] for name, _, _ in quantity_splits}
-    x_key, t_key = get_field_key(args.field)
-
-    if sharded:
-        engine = DistributedCachedInference(
-            raw_model,
-            cache_chunk_size=args.cache_chunk_size,
-            decode_chunk_size=args.decode_chunk_size,
-            num_tiles=args.num_tiles,
-        )
-    else:
-        engine = CachedInference(
-            raw_model,
-            cache_chunk_size=args.cache_chunk_size,
-            decode_chunk_size=args.decode_chunk_size,
-            num_tiles=args.num_tiles,
-        )
-
-    for batch in dataloader:
-        x = batch[x_key].to(device)
-        target = batch[t_key].to(device)
-
-        if sharded:
-            # Each rank has its local shard; build_cache all-reduces accumulators
-            cache = engine.build_cache(x)
-            pred = engine.decode(x, cache)
-        else:
-            cache = engine.build_cache(x)
-            pred = engine.decode(x, cache)
-
-        # Decode predictions back to original scale for fair comparison
-        if target_normalizer is not None:
-            pred = target_normalizer.decode(pred)
-
-        error = relative_l2_loss(pred, target)
-        all_errors.append(error.cpu().view(1))
-
-        # Per-quantity L2 errors
-        for name, start, end in quantity_splits:
-            q_error = relative_l2_loss(pred[..., start:end], target[..., start:end])
-            per_quantity_errors[name].append(q_error.cpu().view(1))
-
-    if all_errors:
-        mean_error = torch.cat(all_errors).mean().item()
-    else:
-        mean_error = float("inf")
-
-    results = {}
-    for name, errs in per_quantity_errors.items():
-        if errs:
-            results[name] = torch.cat(errs).mean().item()
-        else:
-            results[name] = float("inf")
-
-    if sharded and dist.is_initialized():
-        # Average errors across ranks for consistent reporting
-        mean_error = _all_reduce_mean(mean_error, device)
-        for name in results:
-            results[name] = _all_reduce_mean(results[name], device)
-
-    results["aggregate"] = mean_error
-    return results
-
-
-def main():
-    import shutil
-
-    logall(f"main() entered (pid={os.getpid()})")
-    args = parse_args()
-    logall("args parsed")
-
-    # --- Preload data to local SSD BEFORE distributed setup ---
-    # Must happen before dist.init_process_group() so no NCCL collective is
-    # open during the copy. NCCL's watchdog kills ranks after 600 s of waiting
-    # on any collective — preloading 400+ NPZ files takes 10-15 minutes.
-    #
-    # Coordination uses LOCAL_RANK (set by torchrun) + a sentinel file:
-    #   LOCAL_RANK 0  → copies files, writes sentinel when done
-    #   LOCAL_RANK 1+ → spin-wait on sentinel (no NCCL involved)
     local_ssd = "/local_disk0/transolver_data"
     sentinel = os.path.join(local_ssd, ".preload_done")
     local_rank = int(os.environ.get("LOCAL_RANK", "0"))
-    local_data_dir = args.data_dir
 
     if os.path.exists("/local_disk0") and not os.path.exists(sentinel):
         if local_rank == 0:
@@ -466,36 +250,21 @@ def main():
             logall(f"[local_rank {local_rank}] Sentinel found, proceeding")
 
     if os.path.exists(sentinel):
-        local_data_dir = local_ssd
-        logall(f"Using local SSD data dir: {local_data_dir}")
+        logall(f"Using local SSD data dir: {local_ssd}")
+        return local_ssd
+    return args.data_dir
 
-    # --- Reproducibility ---
-    torch.manual_seed(args.seed)
-    torch.cuda.manual_seed_all(args.seed)
-    # Do NOT set cudnn.deterministic=True — it costs 10-20% throughput and
-    # provides no benefit here because DDP all-reduce is already non-deterministic.
-    torch.backends.cudnn.benchmark = False  # keeps algorithm choice stable across runs
 
-    # --- Distributed setup ---
-    rank, world_size = setup_distributed()
-    device = get_device()
-    logall(f"distributed setup done: device={device}")
-    log(f"Distributed: {world_size} workers, device={device}")
+def _build_dataloaders(args, local_data_dir, rank, world_size, shard_mesh, device):
+    """Create train/test datasets, DataLoaders, and infer input/output dims.
 
-    if is_main_process():
-        os.makedirs(args.save_dir, exist_ok=True)
-
-    # Mesh sharding: each GPU loads only 1/K of the mesh from disk.
-    # With --no-shard-mesh: every GPU loads the full mesh (classic DDP).
-    shard_mesh = not args.no_shard_mesh and world_size > 1
-
-    # Per-GPU subset size
+    Returns:
+        tuple: (train_dataset, test_dataset, train_loader, test_loader,
+                train_sampler, x_key, t_key, space_dim, out_dim)
+    """
     local_subset_size = args.subset_size // world_size
     log(f"Total subset: {args.subset_size:,}, per-GPU: {local_subset_size:,}")
-    shard_msg = f"ON (each GPU loads 1/{world_size} of mesh)" if shard_mesh else "OFF (full mesh on each GPU)"
-    log(f"Mesh sharding: {shard_msg}")
 
-    # --- Datasets ---
     logall("Creating train dataset...")
     train_dataset = DrivAerMLDataset(
         local_data_dir,
@@ -507,6 +276,7 @@ def main():
         seed=args.seed + rank,
     )
     logall(f"Train dataset: {len(train_dataset)} samples")
+
     # Test dataset: sharded if --shard-eval, otherwise full mesh on rank 0
     test_dataset = DrivAerMLDataset(
         local_data_dir,
@@ -518,40 +288,37 @@ def main():
     )
     logall(f"Test dataset: {len(test_dataset)} samples")
 
-    # SyncedSampler: all ranks see the same shuffled order each epoch so
-    # that each optimizer step combines spatial-shard gradients from the
-    # *same* sample across GPUs — giving 400 steps/epoch (not 100) and
-    # true batch_size=1 matching the paper (see SyncedSampler docstring).
+    # Infer dimensions from first sample (all ranks read their shard independently)
+    logall("Loading first sample to infer dimensions...")
+    sample = train_dataset[0]
+    if dist.is_initialized():
+        dist.barrier()  # sync before model allocation starts
+    logall("Barrier passed")
+
+    x_key, t_key = get_field_key(args.field)
+    space_dim = sample[x_key].shape[-1]
+    out_dim = sample[t_key].shape[-1]
+
+    # SyncedSampler: all ranks see the same shuffled order each epoch so that
+    # each optimizer step combines spatial-shard gradients from the *same* sample
+    # — 400 steps/epoch (not 100) and true batch_size=1 matching the paper.
     train_sampler = SyncedSampler(train_dataset, seed=args.seed)
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=args.batch_size,
-        sampler=train_sampler,
-    )
-    # For periodic training eval, limit to a small subset for speed.
-    # Evaluating all 50 DrivAerML samples (8.8M pts each) takes ~65 min per
-    # eval cycle — dominated by 50×22 cache-build forward passes (100K chunks).
-    # Using 5 samples brings this to ~6 min. 0 or eval_only = full set.
+    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, sampler=train_sampler)
+
+    # For periodic training eval, limit to a small seeded subset for speed.
+    # Evaluating all 50 DrivAerML samples takes ~65 min per eval cycle.
     if not args.eval_only and args.num_eval_samples > 0:
         n_eval = min(args.num_eval_samples, len(test_dataset))
-        # Use seeded random selection rather than always the first N samples.
-        # list(range(n_eval)) biases eval toward whatever geometries happen to
-        # be first in test.txt; a fixed random draw is more representative of
-        # the full test distribution while still being deterministic across runs.
-        import numpy as np
         _rng = np.random.default_rng(seed=42)
         eval_indices = sorted(_rng.choice(len(test_dataset), size=n_eval, replace=False).tolist())
         eval_dataset = Subset(test_dataset, eval_indices)
-        log(f"Training eval: {n_eval}/{len(test_dataset)} test samples "
-            f"(indices {eval_indices}, seed=42)")
+        log(f"Training eval: {n_eval}/{len(test_dataset)} test samples (indices {eval_indices}, seed=42)")
     else:
         eval_dataset = test_dataset
         log(f"Training eval: all {len(test_dataset)} test samples")
+
     # num_workers=2: prefetch next sample from SSD while GPU processes current one.
-    # Each worker opens its own mmap handle in __getitem__ so this is fork-safe.
-    # pin_memory: stages tensors in page-locked RAM for faster DMA to GPU.
-    # persistent_workers: keeps workers alive across eval calls (every 10 epochs)
-    #   to avoid repeated fork/import overhead.
+    # pin_memory + persistent_workers reduce DataLoader overhead across eval calls.
     test_loader = DataLoader(
         eval_dataset,
         batch_size=1,
@@ -561,17 +328,16 @@ def main():
         persistent_workers=True,
     )
 
-    # --- Model ---
-    logall("Loading first sample to infer dimensions...")
-    sample = train_dataset[0]
-    logall("First sample loaded, waiting at barrier...")
-    if dist.is_initialized():
-        dist.barrier()
-    logall("Barrier passed, creating model...")
-    x_key, t_key = get_field_key(args.field)
-    space_dim = sample[x_key].shape[-1]
-    out_dim = sample[t_key].shape[-1]
+    return train_dataset, test_dataset, train_loader, test_loader, train_sampler, x_key, t_key, space_dim, out_dim
 
+
+def _build_and_wrap_model(args, space_dim, out_dim, rank, world_size, device):
+    """Instantiate Transolver3 and wrap in DDP.
+
+    Returns:
+        DDP-wrapped model
+    """
+    logall("Creating model...")
     model = Transolver3(
         space_dim=space_dim,
         n_layers=args.n_layers,
@@ -586,21 +352,28 @@ def main():
     ).to(device)
     logall(f"Model created on {device}")
 
-    # Wrap in DDP — gradient all-reduce is automatic on backward()
     logall("Wrapping in DDP...")
     model = DDP(model, device_ids=[device] if device.type == "cuda" else None)
     logall("DDP ready")
 
     n_params = sum(p.numel() for p in model.parameters())
     log(f"Model parameters: {n_params:,}")
+    return model
 
-    # --- Target normalization (paper Appendix A.3) ---
-    # Fit z-score stats by streaming over a subset of training targets.
-    # With ~8.8M points per sample, 20 samples give ~176M data points —
-    # more than enough for stable mean/std estimates. Each rank computes
-    # stats on its own shard; all-reduce merges them afterwards.
+
+def _fit_target_normalizer(train_dataset, t_key, out_dim, device):
+    """Fit z-score target normalizer on a subset of training samples.
+
+    Uses streaming Welford to avoid loading all targets into memory, then
+    all-reduces mean/std across ranks (each rank sees its spatial shard).
+
+    Returns:
+        TargetNormalizer fitted and moved to device
+    """
     target_normalizer = TargetNormalizer(out_dim=out_dim).to(device)
     n_train = len(train_dataset)
+    # With ~8.8M points per sample, 20 samples give ~176M data points —
+    # more than enough for stable mean/std estimates.
     n_norm_samples = min(n_train, 20)
     log(f"Fitting target normalizer on {n_norm_samples}/{n_train} training samples...")
 
@@ -608,14 +381,13 @@ def main():
         for i in range(n_norm_samples):
             if (i + 1) % 5 == 0 or (i + 1) == n_norm_samples:
                 log(f"  Normalizer fitting: [{i + 1}/{n_norm_samples}]")
-            sample = train_dataset[i]
-            yield sample[t_key]
+            yield train_dataset[i][t_key]
 
     target_normalizer.fit_incremental(_target_iter())
 
     if dist.is_initialized():
-        # All-reduce to get global stats across all shards
-        # Convert to sum/count representation for correct distributed averaging
+        # All-reduce to get global stats across all spatial shards.
+        # Use sum/count representation so the weighted average is exact.
         n_local = torch.tensor([n_norm_samples], dtype=torch.float64, device=device)
         dist.all_reduce(n_local, op=dist.ReduceOp.SUM)
 
@@ -623,15 +395,13 @@ def main():
         dist.all_reduce(mean_sum, op=dist.ReduceOp.SUM)
         global_mean = mean_sum / n_local
 
-        # For std, we need the global variance: Var = E[X^2] - E[X]^2
-        # local std includes eps, but we recompute from scratch
+        # Global variance = avg(local_var) + avg(local_mean²) - global_mean²
         local_var = (target_normalizer.std.double() - target_normalizer.eps) ** 2
         var_sum = (local_var * n_norm_samples).to(device)
         mean_sq_sum = (target_normalizer.mean.double() ** 2 * n_norm_samples).to(device)
         dist.all_reduce(var_sum, op=dist.ReduceOp.SUM)
         dist.all_reduce(mean_sq_sum, op=dist.ReduceOp.SUM)
 
-        # Global variance = avg(local_var) + avg(local_mean^2) - global_mean^2
         global_var = var_sum / n_local + mean_sq_sum / n_local - global_mean**2
         global_std = torch.sqrt(global_var.clamp(min=0)) + target_normalizer.eps
 
@@ -640,9 +410,18 @@ def main():
 
     log(f"Target normalizer: mean={target_normalizer.mean.squeeze().tolist()}, "
         f"std={target_normalizer.std.squeeze().tolist()}")
+    return target_normalizer
 
+
+def _load_model_weights(args, model, target_normalizer, device):
+    """Load model weights from MLflow run or checkpoint file.
+
+    Optionally overrides the target normalizer with the one saved in MLflow.
+
+    Returns:
+        target_normalizer (possibly updated from MLflow artifacts)
+    """
     if args.mlflow_run_id_file and os.path.exists(args.mlflow_run_id_file):
-        # Load model from MLflow (preferred over --checkpoint)
         with open(args.mlflow_run_id_file) as f:
             run_id = f.read().strip()
         log(f"Loading model from MLflow run: {run_id}")
@@ -650,7 +429,6 @@ def main():
         model.module.load_state_dict(loaded_model.state_dict())
         log(f"Loaded model from MLflow run {run_id}")
 
-        # Load target normalizer from MLflow artifacts (overrides the one fitted above)
         try:
             from transolver3.mlflow_utils import load_normalization_artifacts
             _, mlflow_target_norm = load_normalization_artifacts(run_id)
@@ -660,57 +438,57 @@ def main():
                 log("Loaded target normalizer from MLflow artifacts")
         except Exception as e:
             log(f"Could not load normalizer from MLflow ({e}), using refitted one")
+
     elif args.checkpoint:
-        # Fallback: load from checkpoint file
         state_dict = torch.load(args.checkpoint, map_location=device)
         model.module.load_state_dict(state_dict)
         log(f"Loaded checkpoint: {args.checkpoint}")
 
-    if args.eval_only:
-        if args.shard_eval:
-            eval_results = evaluate(
-                model, test_loader, args, device,
-                sharded=True, target_normalizer=target_normalizer,
-            )
-        elif is_main_process():
-            eval_results = evaluate(
-                model, test_loader, args, device,
-                sharded=False, target_normalizer=target_normalizer,
-            )
-        else:
-            eval_results = None
-        if eval_results is not None:
-            agg = eval_results["aggregate"]
-            log(f"Test relative L2 error: {agg:.4f} ({agg * 100:.2f}%)")
-            for name, val in eval_results.items():
-                if name != "aggregate":
-                    log(f"  {name}: {val:.4f} ({val * 100:.2f}%)")
-        cleanup()
-        return
+    return target_normalizer
 
-    # --- Training ---
-    # Scale LR by world_size (linear scaling rule) unless --no-scale-lr
-    scaled_lr = args.lr if args.no_scale_lr else args.lr * world_size
+
+def _run_eval_only(args, model, test_loader, target_normalizer, device):
+    """Run evaluation on the full test set and log results."""
+    if args.shard_eval:
+        eval_results = evaluate(model, test_loader, args, device,
+                                sharded=True, target_normalizer=target_normalizer)
+    elif is_main_process():
+        eval_results = evaluate(model, test_loader, args, device,
+                                sharded=False, target_normalizer=target_normalizer)
+    else:
+        eval_results = None
+
+    if eval_results is not None:
+        agg = eval_results["aggregate"]
+        log(f"Test relative L2 error: {agg:.4f} ({agg * 100:.2f}%)")
+        for name, val in eval_results.items():
+            if name != "aggregate":
+                log(f"  {name}: {val:.4f} ({val * 100:.2f}%)")
+
+
+def _setup_training(args, model, train_loader, rank, world_size, device, scaled_lr):
+    """Create optimizer, scheduler, scaler, mesh sampler; resume if requested.
+
+    Returns:
+        tuple: (optimizer, scheduler, scaler, mesh_sampler, start_epoch, best_error)
+    """
     optimizer = create_optimizer(model, lr=scaled_lr, weight_decay=args.weight_decay)
-    # Scheduler total_steps = number of optimizer steps (not backward passes).
-    # With gradient accumulation, optimizer steps happen every accum batches.
     steps_per_epoch = (len(train_loader) + args.accumulation_steps - 1) // args.accumulation_steps
     total_steps = args.epochs * steps_per_epoch
     scheduler = create_scheduler(optimizer, total_steps)
 
-    # Mixed precision (paper Appendix A.4)
     # GradScaler only needed for float16; bfloat16 has float32 dynamic range
-    # so it doesn't need loss scaling.
     _amp_dtype_str = getattr(args, "amp_dtype", "bfloat16")
     scaler = torch.amp.GradScaler() if (args.amp and _amp_dtype_str == "float16") else None
     if args.amp:
         log(f"Mixed precision training enabled (AMP dtype={_amp_dtype_str})")
 
-    # Each rank gets a unique seed for different random subsets
+    # Each rank gets a unique seed for different random spatial subsets
+    local_subset_size = args.subset_size // world_size
     mesh_sampler = AmortizedMeshSampler(local_subset_size, seed=args.seed + rank)
 
-    # Resume from full training checkpoint (model + optimizer + scheduler + epoch)
     start_epoch = 0
+    best_error = float("inf")
     if args.resume and os.path.exists(args.resume):
         log(f"Resuming from checkpoint: {args.resume}")
         ckpt = torch.load(args.resume, map_location=device)
@@ -721,98 +499,170 @@ def main():
             scaler.load_state_dict(ckpt["scaler"])
         start_epoch = ckpt["epoch"] + 1
         best_error = ckpt.get("best_error", float("inf"))
-        log(f"Resumed from epoch {ckpt['epoch']}, best_error={best_error:.4f}, continuing at epoch {start_epoch}")
+        log(f"Resumed from epoch {ckpt['epoch']}, best_error={best_error:.4f}, "
+            f"continuing at epoch {start_epoch}")
 
-    lr_msg = f"lr={scaled_lr:.1e}" + ("" if args.no_scale_lr else f" (scaled {world_size}x)")
-    log(f"Training: epochs {start_epoch + 1}-{args.epochs}, {lr_msg}")
-    log(f"Tiles: {args.num_tiles}, Cache chunks: {args.cache_chunk_size:,}")
+    return optimizer, scheduler, scaler, mesh_sampler, start_epoch, best_error
 
-    # --- MLflow tracking (rank 0 only) ---
-    # Auth env vars are propagated by _propagate_databricks_auth_env() in the
-    # driver before TorchDistributor launches, so child processes can reach MLflow.
-    mlflow_run = None
-    if _HAS_MLFLOW and is_main_process():
-        try:
-            mlflow.set_experiment(args.mlflow_experiment)
-            mlflow_run = mlflow.start_run(run_name=f"drivaer-{args.field}-{args.n_layers}L")
-            log_training_run(
-                model,
-                {
-                    "field": args.field,
-                    "epochs": args.epochs,
-                    "lr": scaled_lr,
-                    "weight_decay": args.weight_decay,
-                    "subset_size": args.subset_size,
-                    "n_layers": args.n_layers,
-                    "n_hidden": args.n_hidden,
-                    "n_head": args.n_head,
-                    "slice_num": args.slice_num,
-                    "num_tiles": args.num_tiles,
-                    "world_size": world_size,
-                    "shard_mesh": shard_mesh,
-                    "seed": args.seed,
-                    "batch_size": args.batch_size,
-                    "accumulation_steps": args.accumulation_steps,
-                    "grad_clip": args.grad_clip,
-                    "patience": args.patience,
-                    "save_every": args.save_every,
-                    "cache_chunk_size": args.cache_chunk_size,
-                    "decode_chunk_size": args.decode_chunk_size,
-                    "effective_batch_size": args.batch_size * world_size * args.accumulation_steps,
-                    "space_dim": space_dim,
-                    "out_dim": out_dim,
-                    "dropout": args.dropout,
-                    "amp": args.amp,
-                    "no_scale_lr": args.no_scale_lr,
-                },
-                normalizers={"target": target_normalizer},
-            )
-            # Log installed package versions for reproducibility (MLOPS-5)
-            import importlib.metadata
-            for pkg in ["torch", "einops", "timm", "numpy", "mlflow"]:
-                try:
-                    ver = importlib.metadata.version(pkg)
-                    mlflow.log_param(f"pkg_{pkg}", ver)
-                except Exception:
-                    pass
-            mlflow.log_param("python_version", sys.version.split()[0])
 
-            # Log dataset lineage via mlflow.data (MLOPS-2)
-            import hashlib
+def _start_mlflow_run(
+    args, model, train_ds, test_ds, x_key, t_key,
+    space_dim, out_dim, target_normalizer, shard_mesh, world_size, scaled_lr,
+):
+    """Start an MLflow run and log parameters, package versions, and dataset info.
 
-            # Hash split files for exact data reproducibility
-            for split_name in ["train", "test"]:
-                split_path = os.path.join(args.data_dir, f"{split_name}.txt")
-                if os.path.exists(split_path):
-                    with open(split_path, "rb") as f:
-                        digest = hashlib.sha256(f.read()).hexdigest()[:16]
-                    mlflow.log_param(f"split_{split_name}_hash", digest)
+    Returns:
+        mlflow ActiveRun object, or None if MLflow is unavailable / fails.
+    """
+    if not (_HAS_MLFLOW and is_main_process()):
+        return None
 
-            # Log training dataset with schema and source via mlflow.data
-            train_sample = train_dataset[0]
-            train_ds = mlflow.data.from_numpy(
+    try:
+        mlflow.set_experiment(args.mlflow_experiment)
+        mlflow_run = mlflow.start_run(run_name=f"drivaer-{args.field}-{args.n_layers}L")
+        log_training_run(
+            model,
+            {
+                "field": args.field,
+                "epochs": args.epochs,
+                "lr": scaled_lr,
+                "weight_decay": args.weight_decay,
+                "subset_size": args.subset_size,
+                "n_layers": args.n_layers,
+                "n_hidden": args.n_hidden,
+                "n_head": args.n_head,
+                "slice_num": args.slice_num,
+                "num_tiles": args.num_tiles,
+                "world_size": world_size,
+                "shard_mesh": shard_mesh,
+                "seed": args.seed,
+                "batch_size": args.batch_size,
+                "accumulation_steps": args.accumulation_steps,
+                "grad_clip": args.grad_clip,
+                "patience": args.patience,
+                "save_every": args.save_every,
+                "cache_chunk_size": args.cache_chunk_size,
+                "decode_chunk_size": args.decode_chunk_size,
+                "effective_batch_size": args.batch_size * world_size * args.accumulation_steps,
+                "space_dim": space_dim,
+                "out_dim": out_dim,
+                "dropout": args.dropout,
+                "amp": args.amp,
+                "no_scale_lr": args.no_scale_lr,
+            },
+            normalizers={"target": target_normalizer},
+        )
+
+        # Package versions for reproducibility
+        import importlib.metadata
+        for pkg in ["torch", "einops", "timm", "numpy", "mlflow"]:
+            try:
+                mlflow.log_param(f"pkg_{pkg}", importlib.metadata.version(pkg))
+            except Exception:
+                pass
+        mlflow.log_param("python_version", sys.version.split()[0])
+
+        # Dataset lineage — hash split files for exact reproducibility
+        import hashlib
+        for split_name in ["train", "test"]:
+            split_path = os.path.join(args.data_dir, f"{split_name}.txt")
+            if os.path.exists(split_path):
+                with open(split_path, "rb") as f:
+                    digest = hashlib.sha256(f.read()).hexdigest()[:16]
+                mlflow.log_param(f"split_{split_name}_hash", digest)
+
+        train_sample = train_ds[0]
+        mlflow.log_input(
+            mlflow.data.from_numpy(
                 features=train_sample[x_key].numpy(),
                 targets=train_sample[t_key].numpy(),
                 source=args.data_dir,
                 name=f"drivaer-{args.field}-train",
-            )
-            mlflow.log_input(train_ds, context="training")
-            mlflow.log_param("train_samples", len(train_dataset))
+            ),
+            context="training",
+        )
+        mlflow.log_param("train_samples", len(train_ds))
 
-            # Log test dataset
-            test_sample = test_dataset[0]
-            test_ds = mlflow.data.from_numpy(
+        test_sample = test_ds[0]
+        mlflow.log_input(
+            mlflow.data.from_numpy(
                 features=test_sample[x_key].numpy(),
                 targets=test_sample[t_key].numpy(),
                 source=args.data_dir,
                 name=f"drivaer-{args.field}-test",
-            )
-            mlflow.log_input(test_ds, context="evaluation")
-            mlflow.log_param("test_samples", len(test_dataset))
-            mlflow.log_param("data_dir", args.data_dir)
-        except Exception as e:
-            log(f"MLflow tracking unavailable ({e}), continuing without it")
-            mlflow_run = None
+            ),
+            context="evaluation",
+        )
+        mlflow.log_param("test_samples", len(test_ds))
+        mlflow.log_param("data_dir", args.data_dir)
+
+        return mlflow_run
+
+    except Exception as e:
+        log(f"MLflow tracking unavailable ({e}), continuing without it")
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+def main():
+    logall(f"main() entered (pid={os.getpid()})")
+    args = parse_args()
+    logall("args parsed")
+
+    local_data_dir = _preload_to_ssd(args)
+
+    # Reproducibility
+    torch.manual_seed(args.seed)
+    torch.cuda.manual_seed_all(args.seed)
+    # Do NOT set cudnn.deterministic=True — it costs 10-20% throughput and
+    # provides no benefit here because DDP all-reduce is already non-deterministic.
+    torch.backends.cudnn.benchmark = False
+
+    rank, world_size = setup_distributed()
+    device = get_device()
+    logall(f"distributed setup done: device={device}")
+    log(f"Distributed: {world_size} workers, device={device}")
+
+    if is_main_process():
+        os.makedirs(args.save_dir, exist_ok=True)
+
+    shard_mesh = not args.no_shard_mesh and world_size > 1
+    shard_msg = f"ON (each GPU loads 1/{world_size} of mesh)" if shard_mesh else "OFF (full mesh on each GPU)"
+    log(f"Mesh sharding: {shard_msg}")
+
+    (train_ds, test_ds, train_loader, test_loader,
+     train_sampler, x_key, t_key, space_dim, out_dim) = _build_dataloaders(
+        args, local_data_dir, rank, world_size, shard_mesh, device
+    )
+
+    model = _build_and_wrap_model(args, space_dim, out_dim, rank, world_size, device)
+    target_normalizer = _fit_target_normalizer(train_ds, t_key, out_dim, device)
+    target_normalizer = _load_model_weights(args, model, target_normalizer, device)
+
+    if args.eval_only:
+        _run_eval_only(args, model, test_loader, target_normalizer, device)
+        cleanup()
+        return
+
+    scaled_lr = args.lr if args.no_scale_lr else args.lr * world_size
+    lr_msg = f"lr={scaled_lr:.1e}" + ("" if args.no_scale_lr else f" (scaled {world_size}x)")
+    log(f"Training: epochs 1-{args.epochs}, {lr_msg}")
+    log(f"Tiles: {args.num_tiles}, Cache chunks: {args.cache_chunk_size:,}")
+
+    (optimizer, scheduler, scaler,
+     mesh_sampler, start_epoch, best_error) = _setup_training(
+        args, model, train_loader, rank, world_size, device, scaled_lr
+    )
+
+    # Auth env vars are propagated by _propagate_databricks_auth_env() in the
+    # driver before TorchDistributor launches, so child processes can reach MLflow.
+    mlflow_run = _start_mlflow_run(
+        args, model, train_ds, test_ds, x_key, t_key,
+        space_dim, out_dim, target_normalizer, shard_mesh, world_size, scaled_lr,
+    )
 
     # --- Training loop ---
     # try/finally ensures mlflow.end_run() is always called, even on OOM /
@@ -823,8 +673,9 @@ def main():
         if start_epoch == 0:
             best_error = float("inf")
         evals_without_improvement = 0
+
         for epoch in range(start_epoch, args.epochs):
-            train_sampler.set_epoch(epoch)  # shuffle differently each epoch
+            train_sampler.set_epoch(epoch)
             t0 = time.time()
             train_loss = train_epoch(
                 model, train_loader, optimizer, scheduler, mesh_sampler, args, device,
@@ -832,27 +683,22 @@ def main():
             )
             t1 = time.time()
 
-            # Evaluate
             did_eval = (epoch + 1) % 10 == 0 or epoch == args.epochs - 1
             eval_results = None
             test_error = None
+
             if did_eval:
                 if args.shard_eval:
-                    eval_results = evaluate(
-                        model, test_loader, args, device,
-                        sharded=True, target_normalizer=target_normalizer,
-                    )
+                    eval_results = evaluate(model, test_loader, args, device,
+                                            sharded=True, target_normalizer=target_normalizer)
                 elif is_main_process():
-                    eval_results = evaluate(
-                        model, test_loader, args, device,
-                        sharded=False, target_normalizer=target_normalizer,
-                    )
+                    eval_results = evaluate(model, test_loader, args, device,
+                                            sharded=False, target_normalizer=target_normalizer)
 
                 if is_main_process() and eval_results is not None:
                     test_error = eval_results["aggregate"]
                     per_q = " | ".join(
-                        f"{k}={v:.4f}" for k, v in eval_results.items()
-                        if k != "aggregate"
+                        f"{k}={v:.4f}" for k, v in eval_results.items() if k != "aggregate"
                     )
                     log(
                         f"Epoch {epoch + 1}/{args.epochs} | "
@@ -874,18 +720,21 @@ def main():
 
                 # Broadcast early stopping decision from rank 0 so all ranks break together
                 if args.patience > 0 and dist.is_initialized():
-                    should_stop = torch.tensor([1 if evals_without_improvement >= args.patience else 0], device=device)
+                    should_stop = torch.tensor(
+                        [1 if evals_without_improvement >= args.patience else 0], device=device
+                    )
                     dist.broadcast(should_stop, src=0)
                     if should_stop.item():
-                        log(f"Early stopping at epoch {epoch + 1}: no improvement for {args.patience} eval cycles")
+                        log(f"Early stopping at epoch {epoch + 1}: "
+                            f"no improvement for {args.patience} eval cycles")
                         break
                 elif args.patience > 0 and evals_without_improvement >= args.patience:
-                    log(f"Early stopping at epoch {epoch + 1}: no improvement for {args.patience} eval cycles")
+                    log(f"Early stopping at epoch {epoch + 1}: "
+                        f"no improvement for {args.patience} eval cycles")
                     break
             else:
                 current_lr = optimizer.param_groups[0]["lr"]
-                avg_time = (t1 - t0)  # this epoch's time
-                remaining = (args.epochs - epoch - 1) * avg_time
+                remaining = (args.epochs - epoch - 1) * (t1 - t0)
                 eta_h, eta_m = divmod(int(remaining), 3600)
                 eta_m = eta_m // 60
                 log(
@@ -897,25 +746,24 @@ def main():
                 )
 
             # Save full training checkpoint periodically (for resumption)
-            if (epoch + 1) % args.save_every == 0:
-                if is_main_process():
-                    ckpt_path = os.path.join(args.save_dir, "training_checkpoint.pt")
-                    ckpt_data = {
-                        "epoch": epoch,
-                        "model": model.module.state_dict(),
-                        "optimizer": optimizer.state_dict(),
-                        "scheduler": scheduler.state_dict(),
-                        "best_error": best_error,
-                        "target_normalizer": target_normalizer.state_dict(),
-                    }
-                    if scaler is not None:
-                        ckpt_data["scaler"] = scaler.state_dict()
-                    torch.save(ckpt_data, ckpt_path)
-                    log(f"Saved training checkpoint at epoch {epoch + 1} to {ckpt_path}")
-                if dist.is_initialized():
-                    dist.barrier()
+            if (epoch + 1) % args.save_every == 0 and is_main_process():
+                ckpt_path = os.path.join(args.save_dir, "training_checkpoint.pt")
+                ckpt_data = {
+                    "epoch": epoch,
+                    "model": model.module.state_dict(),
+                    "optimizer": optimizer.state_dict(),
+                    "scheduler": scheduler.state_dict(),
+                    "best_error": best_error,
+                    "target_normalizer": target_normalizer.state_dict(),
+                }
+                if scaler is not None:
+                    ckpt_data["scaler"] = scaler.state_dict()
+                torch.save(ckpt_data, ckpt_path)
+                log(f"Saved training checkpoint at epoch {epoch + 1} to {ckpt_path}")
+            if (epoch + 1) % args.save_every == 0 and dist.is_initialized():
+                dist.barrier()
 
-            # Log metrics to MLflow (live, per-epoch)
+            # Live per-epoch metrics to MLflow
             if mlflow_run and is_main_process():
                 mlflow.log_metric("train_loss", train_loss, step=epoch)
                 mlflow.log_metric("epoch_time_s", t1 - t0, step=epoch)
@@ -927,19 +775,17 @@ def main():
 
         log(f"\nBest test relative L2 error: {best_error:.4f} ({best_error * 100:.2f}%)")
 
-        # Log best model to MLflow and save run_id for downstream tasks
+        # Log best model artifact and write run_id for downstream tasks
         if mlflow_run and is_main_process():
             mlflow.log_metric("best_test_l2", best_error)
             best_path = os.path.join(args.save_dir, "best_model.pt")
             if os.path.exists(best_path):
                 from transolver3.distributed import unwrap_ddp_model
-
                 raw_model = unwrap_ddp_model(model)
                 raw_model.load_state_dict(torch.load(best_path, map_location=device))
                 sample_x = torch.randn(1, 100, space_dim, device=device)
                 log_model_with_signature(raw_model, sample_x)
 
-            # Write run_id so evaluate/register tasks can reference this run
             run_id = mlflow_run.info.run_id
             run_id_path = os.path.join(args.save_dir, "mlflow_run_id.txt")
             with open(run_id_path, "w") as f:
@@ -949,7 +795,6 @@ def main():
             mlflow.end_run()
             mlflow_run = None  # prevent finally from double-ending
     finally:
-        # Ensure MLflow run is closed even on OOM / NaN / barrier crash
         if mlflow_run and is_main_process():
             mlflow.end_run(status="FAILED")
 
@@ -957,21 +802,16 @@ def main():
 
 
 if __name__ == "__main__":
-    # Support --use-distributor for TorchDistributor launch on Databricks
-    import sys as _sys
-
-    if "--use-distributor" in _sys.argv:
+    if "--use-distributor" in sys.argv:
         from transolver3.databricks_training import launch_distributed_training
 
-        # Parse just num_gpus before handing off
-        _idx = _sys.argv.index("--num-gpus") if "--num-gpus" in _sys.argv else None
-        _num_gpus = int(_sys.argv[_idx + 1]) if _idx else 8
+        _idx = sys.argv.index("--num-gpus") if "--num-gpus" in sys.argv else None
+        _num_gpus = int(sys.argv[_idx + 1]) if _idx else 8
 
-        # Strip --use-distributor and --num-gpus from argv so child processes
-        # launched by torchrun call main() directly (not re-enter distributor)
+        # Strip --use-distributor and --num-gpus so child processes don't re-enter
         _clean_argv = []
         _skip_next = False
-        for _a in _sys.argv[1:]:  # skip script name
+        for _a in sys.argv[1:]:
             if _skip_next:
                 _skip_next = False
                 continue
@@ -981,7 +821,7 @@ if __name__ == "__main__":
                 _skip_next = True
                 continue
             _clean_argv.append(_a)
-        _sys.argv = [_sys.argv[0]] + _clean_argv
+        sys.argv = [sys.argv[0]] + _clean_argv
 
         print(f"[Driver] Launching TorchDistributor with {_num_gpus} GPUs", flush=True)
         print(f"[Driver] Args: {_clean_argv}", flush=True)

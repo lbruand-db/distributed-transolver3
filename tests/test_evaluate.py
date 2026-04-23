@@ -28,7 +28,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "Industrial-Sca
 from transolver3.model import Transolver3
 from transolver3.amortized_training import create_optimizer, create_scheduler
 from transolver3.normalizer import TargetNormalizer
-from exp_drivaer_ml_distributed import evaluate, _QUANTITY_SPLITS, get_field_key
+from train_eval import evaluate, _QUANTITY_SPLITS, get_field_key
 
 
 def _make_model(space_dim=9, out_dim=4):
