@@ -80,6 +80,8 @@ resources:
               - "500"
               - "--patience"
               - "5"
+              - "--num-eval-samples"
+              - "20"
               - "--shard-eval"
               - "--amp"
               - "--no-scale-lr"
