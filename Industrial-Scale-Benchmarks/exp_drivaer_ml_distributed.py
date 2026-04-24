@@ -745,6 +745,11 @@ def main():
                     f"ETA ~{eta_h}h{eta_m:02d}m"
                 )
 
+            # Release unused CUDA cached memory periodically to prevent allocator
+            # fragmentation that causes gradual epoch-time increase over many epochs.
+            if (epoch + 1) % 10 == 0 and device.type == "cuda":
+                torch.cuda.empty_cache()
+
             # Save full training checkpoint periodically (for resumption)
             if (epoch + 1) % args.save_every == 0 and is_main_process():
                 ckpt_path = os.path.join(args.save_dir, "training_checkpoint.pt")

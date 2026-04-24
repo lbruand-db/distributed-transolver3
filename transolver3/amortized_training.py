@@ -24,6 +24,8 @@ on a fixed discretization.
 Reference: Transolver-3 paper, Section 3.2.
 """
 
+import math
+
 import torch
 import torch.nn as nn
 
@@ -117,11 +119,11 @@ def create_scheduler(optimizer, total_steps, warmup_fraction=0.05, min_lr=1e-6):
         else:
             # Cosine decay
             progress = (step - warmup_steps) / max(total_steps - warmup_steps, 1)
-            cosine_decay = 0.5 * (1.0 + torch.cos(torch.tensor(progress * 3.14159265)))
+            cosine_decay = 0.5 * (1.0 + math.cos(math.pi * progress))
             # Scale to ensure min_lr
             base_lr = optimizer.defaults["lr"]
             target = min_lr / base_lr
-            return target + (1.0 - target) * cosine_decay.item()
+            return target + (1.0 - target) * cosine_decay
 
     return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 

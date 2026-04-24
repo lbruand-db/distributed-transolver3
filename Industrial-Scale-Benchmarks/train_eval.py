@@ -83,6 +83,7 @@ def train_epoch(
     else:
         amp_dtype = torch.float16
 
+    amp_enabled = getattr(args, "amp", False)
     optimizer.zero_grad()
     for step, batch in enumerate(dataloader):
         x = batch[x_key].to(device)
@@ -101,7 +102,7 @@ def train_epoch(
         # float16 norm overflows when N >= 65K (sum(x²) > float16 max 65504).
         # relative_l2_loss() always casts to float32 internally, but we also
         # compute it outside autocast to be explicit.
-        with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=scaler is not None):
+        with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=amp_enabled):
             pred = model(x_sub, num_tiles=args.num_tiles)
 
         # Loss in float32 — safe regardless of amp_dtype
