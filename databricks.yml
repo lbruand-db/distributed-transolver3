@@ -35,6 +35,9 @@ variables:
   cloud:
     description: "Cloud provider: aws or azure"
     default: "aws"
+  resume_checkpoint:
+    description: "Path to training_checkpoint.pt to resume from. Default sentinel = fresh run."
+    default: "__no_resume__"
 
 targets:
   # =====================================================================

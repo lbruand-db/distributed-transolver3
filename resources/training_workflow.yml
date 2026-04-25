@@ -87,6 +87,8 @@ resources:
               - "--no-scale-lr"
               - "--save_dir"
               - "${var.data_volume_path}/checkpoints"
+              - "--resume"
+              - "${var.resume_checkpoint}"
           new_cluster:
             spark_version: "15.4.x-gpu-ml-scala2.12"
             node_type_id: ${var.node_type_id}
